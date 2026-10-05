@@ -1,0 +1,4 @@
+interface:
+  display_name: "Create GitHub Issue"
+  short_description: "Draft and file issues with context and labels"
+  default_prompt: "Use -github-issue to create a new GitHub issue."

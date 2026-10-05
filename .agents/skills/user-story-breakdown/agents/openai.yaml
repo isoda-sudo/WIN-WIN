@@ -1,0 +1,4 @@
+interface:
+  display_name: "ユーザーストーリー分解"
+  short_description: "エピックからストーリー・タスクへの分解を支援"
+  default_prompt: "Use -user-story-breakdown to decompose features into user stories and tasks."

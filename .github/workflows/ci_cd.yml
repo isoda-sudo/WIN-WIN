@@ -1,0 +1,192 @@
+name: Run CI/CD
+
+on:
+  push:
+    branches: 
+      - main  # mainブランチへの直接pushによるトリガー
+  pull_request:
+    types: [opened, synchronize, reopened]  # PR作成時・更新時にトリガー
+    branches: ["**"]  # すべてのブランチへのPRをトリガー
+
+# 明示的なパーミッション設定
+permissions:
+  contents: read # リポジトリコンテンツの読み取り権限
+  issues: write
+  pull-requests: write
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # node_modulesとbun-cacheのキャッシングを手動で実装
+      - name: Cache Bun dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.bun/install/cache
+            node_modules
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Run linter
+        run: bun run check
+
+      # lefthookを回避したコミット(--no-verify)でも型エラーをCIで検出する
+      - name: Run type check
+        run: bun run typecheck
+
+      # ADRインデックス表とdocs/adr/配下のファイルの整合性を検証する
+      - name: Run ADR index check
+        run: bun run check:adr
+
+  test:
+    runs-on: ubuntu-latest
+    # lintの後に実行
+    needs: lint
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v7
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # node_modulesとbun-cacheのキャッシングを手動で実装
+      - name: Cache Bun dependencies
+        uses: actions/cache@v6
+        with:
+          path: |
+            ~/.bun/install/cache
+            node_modules
+          key: ${{ runner.os }}-bun-${{ hashFiles('**/bun.lock') }}
+          restore-keys: |
+            ${{ runner.os }}-bun-
+
+      - name: Install dependencies
+        run: bun install
+
+      - name: Run tests
+        run: bun run test
+
+#   # Deploy to Vercel Preview for non-main branches
+#   deploy_preview:
+#     name: Deploy to Vercel Preview
+#     runs-on: ubuntu-latest
+#     # lintとtestが成功した後に実行
+#     needs: [test]
+#     if: ${{ github.ref_name != 'main' && github.event_name == 'pull_request' }}
+#     env:
+#       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+#       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+#       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+#     steps:
+#       - name: Checkout code
+#         uses: actions/checkout@v7
+#       - name: Setup Node.js
+#         uses: actions/setup-node@v6
+#         with:
+#           node-version: '20.x'
+          
+#       # Vercel CLIのnpmキャッシュ
+#       - name: Cache npm dependencies
+#         uses: actions/cache@v6
+#         with:
+#           path: ~/.npm
+#           key: ${{ runner.os }}-npm-${{ hashFiles('**/package-lock.json') }}
+#           restore-keys: |
+#             ${{ runner.os }}-npm-
+          
+#       - name: Install Bun
+#         run: npm install -g bun
+        
+#       - name: Install Vercel CLI
+#         run: npm install --global vercel@latest
+        
+#       - name: Pull Vercel Environment
+#         run: vercel pull --yes --environment=preview --token=${{ secrets.VERCEL_TOKEN }}
+        
+#       - name: Build project artifacts
+#         run: vercel build --token=${{ secrets.VERCEL_TOKEN }}
+        
+#       - name: Deploy to Vercel Preview
+#         id: deploy
+#         run: |
+#           # Deploy to Vercel and capture output
+#           DEPLOY_OUTPUT=$(vercel deploy --prebuilt --token=${{ secrets.VERCEL_TOKEN }})
+#           echo "$DEPLOY_OUTPUT"
+#           # Extract the last preview URL from output
+#           PREVIEW_URL=$(echo "$DEPLOY_OUTPUT" | grep -o 'https://[^ ]*vercel.app' | tail -n1)
+#           echo "preview_url=$PREVIEW_URL" >> $GITHUB_OUTPUT
+          
+#       - name: Comment preview URL on PR
+#         uses: actions/github-script@v7
+#         with:
+#           github-token: ${{ secrets.GITHUB_TOKEN }}
+#           script: |
+#             const prNumber = context.issue.number;
+#             if (prNumber) {
+#               // Post a comment with the preview URL
+#               await github.rest.issues.createComment({
+#                 owner: context.repo.owner,
+#                 repo: context.repo.repo,
+#                 issue_number: prNumber,
+#                 body: `🔔 Preview Deployment: ${{ steps.deploy.outputs.preview_url }}`
+#               });
+#             }
+
+#   # Deploy to Vercel Production for main branch
+#   deploy_production:
+#     name: Deploy to Vercel Production
+#     runs-on: ubuntu-latest
+#     # lintとtestが成功した後に実行
+#     needs: [test]
+#     if: ${{ github.ref_name == 'main' }}
+#     env:
+#       VERCEL_ORG_ID: ${{ secrets.VERCEL_ORG_ID }}
+#       VERCEL_PROJECT_ID: ${{ secrets.VERCEL_PROJECT_ID }}
+#       VERCEL_TOKEN: ${{ secrets.VERCEL_TOKEN }}
+#     steps:
+#       - name: Checkout code
+#         uses: actions/checkout@v7
+        
+#       - name: Setup Node.js
+#         uses: actions/setup-node@v6
+#         with:
+#           node-version: '20.x'
+          
+#       # Vercel CLIのnpmキャッシュ
+#       - name: Cache npm dependencies
+#         uses: actions/cache@v6
+#         with:
+#           path: ~/.npm
+#           key: ${{ runner.os }}-npm-${{ hashFiles('**/package-lock.json') }}
+#           restore-keys: |
+#             ${{ runner.os }}-npm-
+          
+#       - name: Install Bun
+#         run: npm install -g bun
+        
+#       - name: Install Vercel CLI
+#         run: npm install --global vercel@latest
+        
+#       - name: Pull Vercel Environment
+#         run: vercel pull --yes --environment=production --token=${{ secrets.VERCEL_TOKEN }}
+        
+#       - name: Build project artifacts
+#         run: vercel build --prod --token=${{ secrets.VERCEL_TOKEN }}
+        
+#       - name: Deploy to Vercel Production
+#         run: vercel deploy --prebuilt --prod --token=${{ secrets.VERCEL_TOKEN }}

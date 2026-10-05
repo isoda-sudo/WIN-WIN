@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "skills": {
+    "drawio": {
+      "source": "jgraph/drawio-mcp",
+      "sourceType": "github",
+      "computedHash": "95a782a7e57bc1576b8f8144f166dde0350b59009043bbbddc8b8a1ae659a8f7"
+    },
+    "shadcn": {
+      "source": "shadcn/ui",
+      "sourceType": "github",
+      "computedHash": "91c02eb706f046fb9d6a061efbb96496e4be751b5b14c283cf82baaa50f3a985"
+    }
+  }
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Manage Agent-Native Design System"
+  short_description: "Manage design tokens and Shadcn components following the 3-layer model (Tokens/Components/Skills)"
+  default_prompt: "Use manage-agent-native-design-system to check existing tokens and components before any UI change, then implement following the design system contracts and decision rules."

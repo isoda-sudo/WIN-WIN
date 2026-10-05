@@ -1,0 +1,4 @@
+interface:
+  display_name: "Analyze Codebase"
+  short_description: "Deep codebase analysis with deps and tests"
+  default_prompt: "Use -codebase to analyze a file, feature, or folder."

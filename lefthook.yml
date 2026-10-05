@@ -1,0 +1,9 @@
+# If lefthook is invoked but the binary cannot be resolved, fail loudly
+# instead of silently skipping the hook (avoids quality checks slipping through).
+assert_lefthook_installed: true
+
+pre-commit:
+  jobs:
+    - run: bun run check:write
+      stage_fixed: true
+    - run: bun run typecheck

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Create GitHub PR"
+  short_description: "Prepare, validate, and open a pull request"
+  default_prompt: "Use -github-pr to open a PR from the current branch."

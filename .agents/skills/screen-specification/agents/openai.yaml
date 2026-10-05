@@ -1,0 +1,4 @@
+interface:
+  display_name: "画面仕様・ワイヤーフレーム定義"
+  short_description: "UI仕様書と画面遷移図をMermaidで作成"
+  default_prompt: "Use -screen-specification to create UI specifications with screen flow diagrams."

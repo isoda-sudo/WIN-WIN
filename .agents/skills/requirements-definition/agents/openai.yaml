@@ -1,0 +1,4 @@
+interface:
+  display_name: "要件定義・PRD作成"
+  short_description: "ヒアリングを通じてPRDを段階的に作成"
+  default_prompt: "Use -requirements-definition to create a PRD through structured interview."

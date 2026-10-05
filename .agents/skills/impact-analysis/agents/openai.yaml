@@ -1,0 +1,4 @@
+interface:
+  display_name: "インパクト分析"
+  short_description: "変更の影響範囲を調査しリスクレポートを生成"
+  default_prompt: "Use -impact-analysis to analyze the impact of a proposed change on the codebase."

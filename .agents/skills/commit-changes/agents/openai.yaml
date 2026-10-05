@@ -1,0 +1,4 @@
+interface:
+  display_name: "Commit Changes"
+  short_description: "Stage, verify, and commit with standards"
+  default_prompt: "Use -changes to run checks and commit current work."

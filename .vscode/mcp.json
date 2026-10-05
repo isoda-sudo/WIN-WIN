@@ -1,0 +1,9 @@
+{
+  "servers": {
+    "shadcn": {
+      "type": "stdio",
+      "command": "bunx",
+      "args": ["-y", "shadcn@latest", "mcp"]
+    }
+  }
+}
