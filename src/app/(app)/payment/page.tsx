@@ -1,20 +1,20 @@
 "use client";
 
-import {
-  Building2,
-  CalendarClock,
-  ClipboardList,
-  Columns3,
-  History,
-  Plus,
-} from "lucide-react";
+import { Building2, CalendarClock, ClipboardList, Eye } from "lucide-react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import {
+  type CompanyAccount,
+  CompanyAccountCellSelect,
+} from "~/components/shared/company-account-select";
 import { DetailField } from "~/components/shared/detail-field";
+import { LoadMore } from "~/components/shared/load-more";
 import { MonthNav } from "~/components/shared/month-nav";
 import { ScrollableTableSection } from "~/components/shared/scrollable-table";
 import { SummaryCard } from "~/components/shared/summary-card";
+import { WarningBadge } from "~/components/shared/warning-badge";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Checkbox } from "~/components/ui/checkbox";
@@ -50,6 +50,8 @@ import {
   TableRow,
 } from "~/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "~/components/ui/tabs";
+import { compareDesc, type SortOption } from "~/lib/list-sort";
+import { actualPaidTotal, orderCostTotal } from "~/lib/order-cost";
 import {
   nextPaymentTermFields,
   PAYMENT_DUE_DAY_CHOICES,
@@ -57,36 +59,64 @@ import {
   parsePaymentTermLabel,
   withCurrentValue,
 } from "~/lib/payment-term";
-import { PAYMENT_STATUS_CLASS, statusClass } from "~/lib/status-styles";
-import { friendlyErrorMessage } from "~/lib/trpc-error";
-import { cn, truncateChars } from "~/lib/utils";
-import { currentYearMonth } from "~/lib/year-month";
+import {
+  normalizePaymentStatus,
+  OVERDUE_ROW_CLASS,
+  PAYMENT_STATUS_CLASS,
+  paymentFilterLabel,
+  paymentRowClass,
+  paymentStatusLabel,
+  statusClass,
+} from "~/lib/status-styles";
+import { isSuperseded } from "~/lib/superseded";
+import { useCurrentRole } from "~/lib/use-current-role";
+import {
+  EditLockBanner,
+  EditLockedProvider,
+  useEditLock,
+} from "~/lib/use-edit-lock";
+import {
+  focusSearchKeyword,
+  readFocusParams,
+  useFocusDeepLink,
+} from "~/lib/use-focus-deep-link";
+import { useSortedPagedList } from "~/lib/use-sorted-paged-list";
+import { cn } from "~/lib/utils";
+import { currentYearMonth, isDateInYearMonth } from "~/lib/year-month";
 import { api, type RouterOutputs } from "~/trpc/react";
+import { CsvExportMenu } from "./_components/csv-export-menu";
+import { NonConstructionTab } from "./_components/non-construction-tab";
+import {
+  money,
+  PAYMENT_STATUS_OPTIONS,
+  QueryErrorRow,
+  STATUS_FILTER_OPTIONS,
+  type StatusFilter,
+  todayIso,
+} from "./_components/payment-common";
 
 type Order = RouterOutputs["orders"]["list"][number];
 type Project = RouterOutputs["projects"]["list"][number];
-type PaymentRecord = RouterOutputs["payments"]["records"]["list"][number];
-type MiscPayment = RouterOutputs["payments"]["misc"]["list"][number];
-
-const PAYMENT_STATUSES = ["未払い", "部分払い", "支払済み"] as const;
-const STATUS_FILTER_OPTIONS = ["すべて", ...PAYMENT_STATUSES] as const;
 
 const DUE_SOON_DAYS = 7;
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const NUMERIC_ONLY_RE = /^\d+$/;
-const NOTES_TRUNCATE_LENGTH = 15;
+/** 期日未設定の行は月に属さないため表示しない。 */
+const includeNoDue = false;
 
 // ===== 表示項目（列の表示/非表示、幅の広い列を隠して画面幅に収める） =====
-// 支払履歴・支払登録の操作列以外はすべてこの表示項目トグルで制御する。
+// すべての列をこの表示項目トグルで制御する。
 const ORDER_TABLE_OPTIONAL_COLUMNS = [
-  "id",
+  "paymentNo",
   "projectNo",
   "projectName",
   "category",
   "vendor",
   "decided",
-  "remaining",
+  "transferFee",
+  "companyAccount",
   "payment",
+  "paidOn",
   "paymentDate",
   "paymentStatus",
   "notes",
@@ -97,14 +127,17 @@ const ORDER_TABLE_COLUMN_STORAGE_KEY = "payment-order-columns";
 
 function defaultOrderTableColumnState(): OrderTableColumnState {
   return {
-    id: true,
+    paymentNo: true,
     projectNo: true,
     projectName: true,
     category: true,
     vendor: true,
     decided: true,
-    remaining: true,
+    // 振込手数料は初期非表示（表示項目で表示できる）
+    transferFee: false,
+    companyAccount: true,
     payment: true,
+    paidOn: true,
     paymentDate: true,
     paymentStatus: true,
     notes: true,
@@ -149,16 +182,18 @@ function useOrderTableColumnVisibility() {
 }
 
 const ORDER_COLUMN_LABELS = [
-  ["id", "#"],
+  ["paymentNo", "支払ID"],
   ["projectNo", "案件ID"],
   ["projectName", "工事名"],
   ["category", "工種"],
   ["vendor", "発注先"],
-  ["decided", "費用"],
-  ["remaining", "残金"],
+  ["decided", "支払予定額"],
+  ["transferFee", "振込手数料"],
+  ["companyAccount", "支払元口座"],
   ["payment", "支払条件"],
+  ["paidOn", "支払日"],
   ["paymentDate", "支払期日"],
-  ["paymentStatus", "支払ステータス"],
+  ["paymentStatus", "支払いステータス"],
   ["notes", "備考"],
 ] as const;
 
@@ -170,8 +205,8 @@ function OrderColumnsPopover({
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button variant="outline">
-          <Columns3 data-icon="inline-start" />
+        <Button className="shrink-0" size="sm" variant="outline">
+          <Eye data-icon="inline-start" />
           表示項目
         </Button>
       </PopoverTrigger>
@@ -203,57 +238,65 @@ function OrderTableHeaderRow({ columns }: { columns: OrderTableColumnState }) {
   return (
     <TableHeader className="sticky top-0 z-10 bg-background">
       <TableRow>
-        {columns.id && <TableHead>#</TableHead>}
+        {columns.paymentNo && <TableHead>支払ID</TableHead>}
         {columns.projectNo && <TableHead>案件ID</TableHead>}
         {columns.projectName && <TableHead>工事名</TableHead>}
         {columns.category && <TableHead>工種</TableHead>}
         {columns.vendor && <TableHead>発注先</TableHead>}
-        {columns.decided && <TableHead className="text-right">費用</TableHead>}
-        {columns.remaining && (
-          <TableHead className="text-right">残金</TableHead>
+        {columns.decided && (
+          <TableHead className="text-right">支払予定額</TableHead>
         )}
+        {columns.transferFee && (
+          <TableHead className="text-right">振込手数料</TableHead>
+        )}
+        {columns.companyAccount && <TableHead>支払元口座</TableHead>}
         {columns.payment && <TableHead>支払条件</TableHead>}
+        {columns.paidOn && <TableHead>支払日</TableHead>}
         {columns.paymentDate && <TableHead>支払期日</TableHead>}
-        {columns.paymentStatus && <TableHead>支払ステータス</TableHead>}
+        {columns.paymentStatus && <TableHead>支払いステータス</TableHead>}
         {columns.notes && <TableHead>備考</TableHead>}
-        <TableHead />
-        <TableHead />
       </TableRow>
     </TableHeader>
   );
 }
 
-function money(n: number | null | undefined): string {
-  return `¥${(n ?? 0).toLocaleString()}`;
+const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/** YYYY-MM-DD かつ年が2000〜2100の実在日付か（空文字は呼び出し側で扱う）。 */
+function isValidDueDate(value: string): boolean {
+  const m = ISO_DATE_RE.exec(value);
+  if (!m) {
+    return false;
+  }
+  const [y, mo, d] = [Number(m[1]), Number(m[2]), Number(m[3])];
+  if (y < 2000 || y > 2100) {
+    return false;
+  }
+  const dt = new Date(Date.UTC(y, mo - 1, d));
+  return (
+    dt.getUTCFullYear() === y &&
+    dt.getUTCMonth() === mo - 1 &&
+    dt.getUTCDate() === d
+  );
 }
 
-function todayIso(): string {
-  return new Date().toISOString().slice(0, 10);
-}
-
-/** 支払管理の月間サマリ（指定月の支払予定・実績・未払い件数）。 */
+/** 支払い予定表の月間サマリ（指定月の支払予定額・実績額・予定件数）。予定額=確定額＋振込手数料、実績額=支払済みの確定額＋振込手数料。 */
 function computeMonthlyPaymentSummary(
   orders: Order[],
-  records: PaymentRecord[] | undefined,
   yearMonth: string
 ): { paid: number; scheduled: number; unpaidCount: number } {
   const dueThisMonth = orders.filter((o) =>
-    (o.paymentDate ?? "").startsWith(yearMonth)
+    isDateInYearMonth(o.paymentDate, yearMonth)
   );
-  const scheduled = dueThisMonth.reduce(
-    (sum, o) => sum + (o.remaining ?? o.decided ?? 0),
-    0
-  );
+  const scheduled = dueThisMonth.reduce((sum, o) => sum + orderCostTotal(o), 0);
   const unpaidCount = dueThisMonth.filter(
     (o) => (o.paymentStatus ?? "未払い") !== "支払済み"
   ).length;
-  const paid = (records ?? [])
-    .filter((r) => (r.paidDate ?? "").startsWith(yearMonth))
-    .reduce((sum, r) => sum + (r.amount ?? 0), 0);
+  const paid = dueThisMonth.reduce((sum, o) => sum + actualPaidTotal(o), 0);
   return { scheduled, paid, unpaidCount };
 }
 
-/** 支払管理の月間サマリ（支払予定・実績・未払い件数）と月移動ナビゲーション。 */
+/** 支払い予定表の月間サマリ（支払予定・実績・予定件数）と月移動ナビゲーション。 */
 function MonthlyPaymentSummary({
   onMonthChange,
   summary,
@@ -267,12 +310,15 @@ function MonthlyPaymentSummary({
     <div className="flex flex-col gap-3">
       <MonthNav onChange={onMonthChange} yearMonth={yearMonth} />
       <div className="grid grid-cols-3 gap-4">
-        <SummaryCard title="当月支払予定額" value={money(summary.scheduled)} />
-        <SummaryCard title="当月支払実績額" value={money(summary.paid)} />
         <SummaryCard
-          title="当月未払い件数"
-          value={`${summary.unpaidCount}件`}
+          title="当月支払予定額（手数料込み）"
+          value={money(summary.scheduled)}
         />
+        <SummaryCard
+          title="当月支払実績額（手数料込み）"
+          value={money(summary.paid)}
+        />
+        <SummaryCard title="当月予定件数" value={`${summary.unpaidCount}件`} />
       </div>
     </div>
   );
@@ -281,19 +327,26 @@ function MonthlyPaymentSummary({
 /**
  * 画面表示中（絞り込み後）の支払一覧を発注先単位で合算し、総合振込フォーマット
  * のCSVを取得してダウンロードする。合算そのものはサーバー側で行うため、
- * ここでは各行の発注先名・残金をそのまま送るだけでよい。振込指定日はサーバー側
+ * ここでは各行の発注先名・確定額をそのまま送るだけでよい。振込指定日はサーバー側
  * で当日日付が自動設定される（画面側での指定は不要）。
  */
-async function downloadTransferCsv(orders: Order[]) {
+async function downloadTransferCsv(orders: Order[], excelSafe: boolean) {
   const transferDate = todayIso();
-  const items = orders.map((o) => ({
-    vendor: o.vendor ?? "",
-    amount: o.remaining ?? o.decided ?? 0,
-  }));
+  // 振込対象は未払い（予定）の行のみ。金額は確定額。
+  const items = orders
+    .filter((o) => (o.paymentStatus ?? "未払い") !== "支払済み")
+    .map((o) => ({
+      vendor: o.vendor ?? "",
+      amount: o.decided ?? 0,
+    }));
+  if (items.length === 0) {
+    toast.error("出力対象の支払予定がありません");
+    return;
+  }
   const res = await fetch("/api/export/transfer-csv", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ items, transferDate }),
+    body: JSON.stringify({ items, transferDate, excelSafe }),
   });
   if (!res.ok) {
     const data = (await res.json().catch(() => null)) as {
@@ -306,7 +359,7 @@ async function downloadTransferCsv(orders: Order[]) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `sougouhurikomi_${transferDate.replaceAll("-", "")}.csv`;
+  a.download = `sougouhurikomi_${transferDate.replaceAll("-", "")}${excelSafe ? "_excel" : ""}.csv`;
   document.body.append(a);
   a.click();
   a.remove();
@@ -363,27 +416,28 @@ function VendorBankInfoRows({ vendorId }: { vendorId: string | undefined }) {
   );
 }
 
-/** 支払管理の一覧フィルタ判定（旧app filterTable 相当）。数字のみの入力は発注明細ID（#）への完全一致、それ以外は工事名/発注先/案件IDの部分一致とみなす。 */
+/** 支払管理の一覧フィルタ判定（旧app filterTable 相当）。数字のみの入力は発注明細IDへの完全一致、それ以外は工事名/発注先/案件ID/支払IDの部分一致とみなす。 */
 function matchesPaymentFilters(
   o: Order,
   project: Project | undefined,
   filters: {
-    statusFilter: (typeof STATUS_FILTER_OPTIONS)[number];
-    dueFrom: string;
-    dueTo: string;
+    statusFilter: StatusFilter;
+    includeNoDue: boolean;
     keyword: string;
+    yearMonth: string;
   }
 ): boolean {
   if (
     filters.statusFilter !== "すべて" &&
-    (o.paymentStatus ?? "未払い") !== filters.statusFilter
+    normalizePaymentStatus(o.paymentStatus) !== filters.statusFilter
   ) {
     return false;
   }
-  if (filters.dueFrom && (!o.paymentDate || o.paymentDate < filters.dueFrom)) {
-    return false;
-  }
-  if (filters.dueTo && (!o.paymentDate || o.paymentDate > filters.dueTo)) {
+  // 選択月が一覧の絞り込み軸。期日なしは「期日未設定も表示」のときだけ通す。
+  const inMonth = o.paymentDate
+    ? isDateInYearMonth(o.paymentDate, filters.yearMonth)
+    : filters.includeNoDue;
+  if (!inMonth) {
     return false;
   }
   const kw = filters.keyword.trim().toLowerCase();
@@ -396,54 +450,100 @@ function matchesPaymentFilters(
   return (
     (project?.name ?? "").toLowerCase().includes(kw) ||
     (o.vendor ?? "").toLowerCase().includes(kw) ||
-    (project?.projectNo ?? "").toLowerCase().includes(kw)
+    (project?.projectNo ?? "").toLowerCase().includes(kw) ||
+    (o.paymentNo ?? "").toLowerCase().includes(kw)
   );
+}
+
+interface DueInfo {
+  className: string;
+  level: "error" | "warn";
+  message: string;
+}
+
+/** 支払期日の状態。期日超過（赤）と、7日以内に迫っている（琥珀）ものだけ返す。支払済み・期日なしは null。 */
+function dueInfo(
+  dateStr: string | null | undefined,
+  paymentStatus: string | null | undefined
+): DueInfo | null {
+  if (!dateStr || paymentStatus === "支払済み") {
+    return null;
+  }
+  const due = new Date(dateStr);
+  if (Number.isNaN(due.getTime())) {
+    return null;
+  }
+  const today = new Date();
+  today.setHours(0, 0, 0, 0);
+  const diffDays = Math.floor((due.getTime() - today.getTime()) / MS_PER_DAY);
+  if (diffDays < 0) {
+    return {
+      className: "text-red-600 font-medium",
+      level: "error",
+      message: `支払期日（${dateStr}）を${-diffDays}日過ぎています。未払いのままです。`,
+    };
+  }
+  if (diffDays <= DUE_SOON_DAYS) {
+    return {
+      className: "text-amber-600 font-medium",
+      level: "warn",
+      message:
+        diffDays === 0
+          ? `支払期日（${dateStr}）は本日です。`
+          : `支払期日（${dateStr}）まであと${diffDays}日です。`,
+    };
+  }
+  return null;
 }
 
 function dueDateClass(
   dateStr: string | null | undefined,
   paymentStatus: string | null | undefined
 ): string {
-  if (!dateStr || paymentStatus === "支払済み") {
-    return "";
-  }
-  const due = new Date(dateStr);
-  if (Number.isNaN(due.getTime())) {
-    return "";
-  }
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const diffDays = Math.floor((due.getTime() - today.getTime()) / MS_PER_DAY);
-  if (diffDays < 0) {
-    return "text-red-600 font-medium";
-  }
-  if (diffDays <= DUE_SOON_DAYS) {
-    return "text-amber-600 font-medium";
-  }
-  return "";
+  return dueInfo(dateStr, paymentStatus)?.className ?? "";
+}
+
+/** 期日超過・間近のときだけ、日付の隣に「！」バッジ（ホバーで理由）を出す。 */
+function DueWarning({
+  date,
+  status,
+}: {
+  date: string | null | undefined;
+  status: string | null | undefined;
+}) {
+  const info = dueInfo(date, status);
+  return info ? <WarningBadge message={info.message} /> : null;
 }
 
 export default function PaymentPage() {
+  const lock = useEditLock("payments");
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="font-bold text-2xl">支払管理</h1>
+        <h1 className="font-bold text-2xl">支払い予定表</h1>
         <p className="text-muted-foreground text-sm">
           発注先への支払状況を管理します
         </p>
       </div>
-      <Tabs defaultValue="orders">
-        <TabsList>
-          <TabsTrigger value="orders">工事支払</TabsTrigger>
-          <TabsTrigger value="misc">工事外</TabsTrigger>
-        </TabsList>
-        <TabsContent className="mt-4" value="orders">
-          <OrderPaymentsTab />
-        </TabsContent>
-        <TabsContent className="mt-4" value="misc">
-          <MiscPaymentsTab />
-        </TabsContent>
-      </Tabs>
+      <EditLockBanner
+        freed={lock.freed}
+        holder={lock.holder}
+        locked={lock.locked}
+      />
+      <EditLockedProvider value={lock.locked}>
+        <Tabs defaultValue="orders">
+          <TabsList>
+            <TabsTrigger value="orders">工事支払</TabsTrigger>
+            <TabsTrigger value="misc">工事外</TabsTrigger>
+          </TabsList>
+          <TabsContent className="mt-4" value="orders">
+            <OrderPaymentsTab />
+          </TabsContent>
+          <TabsContent className="mt-4" value="misc">
+            <NonConstructionTab />
+          </TabsContent>
+        </Tabs>
+      </EditLockedProvider>
     </div>
   );
 }
@@ -454,24 +554,40 @@ export default function PaymentPage() {
 
 function OrderPaymentsTab() {
   const utils = api.useUtils();
-  const { data: orders, isLoading } = api.orders.list.useQuery();
+  const {
+    data: orders,
+    isLoading,
+    isError,
+    refetch,
+  } = api.orders.list.useQuery();
   const { data: projects } = api.projects.list.useQuery();
-  const { data: vendors } = api.vendors.list.useQuery();
-  const { data: records } = api.payments.records.list.useQuery();
+  // 税理士・社労士は発注先マスタ・振込先口座・全銀CSVを扱えない（閲覧専用）。
+  const {
+    canReadMasterData,
+    canSeeBank,
+    isReadOnly: readOnlyRole,
+  } = useCurrentRole();
+  // 自社口座マスタは管理者・経理だけが読める（閲覧のみのロールは選択・表示しない）
+  const { data: companyAccounts } = api.companyAccounts.list.useQuery(
+    undefined,
+    { enabled: !readOnlyRole && canSeeBank }
+  );
+  const { data: vendors } = api.vendors.list.useQuery(undefined, {
+    enabled: canReadMasterData,
+  });
   const columns = useOrderTableColumnVisibility();
 
-  const [statusFilter, setStatusFilter] =
-    useState<(typeof STATUS_FILTER_OPTIONS)[number]>("すべて");
-  const [dueFrom, setDueFrom] = useState("");
-  const [dueTo, setDueTo] = useState("");
-  const [keyword, setKeyword] = useState("");
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>("すべて");
+  // 通知の「詳細を見る」で開かれたときは、最初からIDで1件に絞り込む
+  const focusParams = readFocusParams(useSearchParams());
+  const [keyword, setKeyword] = useState(focusParams.q ?? "");
   // idのみを保持し、表示中の内容は常にordersクエリの最新値から導出する
   // （支払明細モーダルを開いたまま支払条件を変更しても、その場で反映されるように）。
   const [viewOrderId, setViewOrderId] = useState<number | null>(null);
-  const [historyOrder, setHistoryOrder] = useState<Order | null>(null);
-  const [registerOrder, setRegisterOrder] = useState<Order | null>(null);
   const [notesDraft, setNotesDraft] = useState<Record<number, string>>({});
-  const [summaryMonth, setSummaryMonth] = useState(currentYearMonth);
+  const [summaryMonth, setSummaryMonth] = useState(
+    () => focusParams.month ?? currentYearMonth()
+  );
 
   const viewOrder =
     (viewOrderId && orders?.find((o) => o.id === viewOrderId)) || null;
@@ -494,11 +610,7 @@ function OrderPaymentsTab() {
     return m;
   }, [vendors]);
 
-  const invalidate = () =>
-    Promise.all([
-      utils.orders.list.invalidate(),
-      utils.payments.records.list.invalidate(),
-    ]);
+  const invalidate = () => Promise.all([utils.orders.list.invalidate()]);
 
   const updateMutation = api.orders.update.useMutation({
     onSuccess: async () => {
@@ -514,31 +626,99 @@ function OrderPaymentsTab() {
     },
   });
 
+  // オーダー移行（コピー元）案件の発注はグレーアウトで表示のみ。集計・サマリには含めない
   const purchaseOrders = useMemo(
     () => (orders ?? []).filter((o) => o.vendor || o.category),
     [orders]
   );
+  const activePurchaseOrders = useMemo(
+    () =>
+      purchaseOrders.filter(
+        (o) => !isSuperseded(projectMap.get(o.projectId)?.status)
+      ),
+    [purchaseOrders, projectMap]
+  );
+
+  // ステータスの候補は、発注に実在するものだけ（選択中の値は消さない）
+  const statusOptions = useMemo(() => {
+    const existing = new Set(
+      purchaseOrders.map((o) => normalizePaymentStatus(o.paymentStatus))
+    );
+    return STATUS_FILTER_OPTIONS.filter(
+      (s) => s === "すべて" || existing.has(s) || s === statusFilter
+    );
+  }, [purchaseOrders, statusFilter]);
 
   const filtered = useMemo(
     () =>
       purchaseOrders.filter((o) =>
         matchesPaymentFilters(o, projectMap.get(o.projectId), {
           statusFilter,
-          dueFrom,
-          dueTo,
+          includeNoDue,
           keyword,
+          yearMonth: summaryMonth,
         })
       ),
-    [purchaseOrders, statusFilter, dueFrom, dueTo, keyword, projectMap]
+    [purchaseOrders, statusFilter, keyword, summaryMonth, projectMap]
   );
 
-  // 固定列（支払履歴・支払登録）2列 + トグル可能な列
-  const visibleColumnCount =
-    2 + Object.values(columns.state).filter(Boolean).length;
+  // 引渡月降順は案件の引渡月で比較する（projectMap は案件ID→案件）
+  const orderSortOptions = useMemo<readonly SortOption<Order>[]>(
+    () => [
+      { compare: (a, b) => a.id - b.id, label: "ID昇順", value: "id" },
+      {
+        compare: (a, b) =>
+          compareDesc(
+            projectMap.get(a.projectId)?.deliveryMonth,
+            projectMap.get(b.projectId)?.deliveryMonth
+          ) || b.id - a.id,
+        label: "引渡月降順",
+        value: "delivery",
+      },
+      {
+        compare: (a, b) => compareDesc(a.decided, b.decided) || b.id - a.id,
+        label: "契約金額降順",
+        value: "amount",
+      },
+    ],
+    [projectMap]
+  );
+  const paged = useSortedPagedList({
+    options: orderSortOptions,
+    resetKey: `${statusFilter}|${keyword}|${summaryMonth}`,
+    rows: filtered,
+  });
+
+  // 通知の「詳細を見る」（?focus=order-ID）: 対象の発注が見える状態にして、行まで移動する
+  const [revealAll, setRevealAll] = useState(false);
+  const { showAll: showAllOrders } = paged;
+  useEffect(() => {
+    if (revealAll) {
+      showAllOrders();
+      setRevealAll(false);
+    }
+  }, [revealAll, showAllOrders]);
+  useFocusDeepLink({
+    ready: Boolean(orders),
+    resolve: (ids) => {
+      const target = orders?.find((o) => ids.includes(`order-${o.id}`));
+      if (target?.paymentDate) {
+        setSummaryMonth(target.paymentDate.slice(0, 7));
+      }
+      setStatusFilter("すべて");
+      // 1件の対象はIDで検索して絞り込む（一覧全体を描画しない）
+      setKeyword(focusSearchKeyword(ids));
+      setRevealAll(true);
+    },
+  });
+
+  const visibleColumnCount = Object.values(columns.state).filter(
+    Boolean
+  ).length;
 
   const monthlySummary = useMemo(
-    () => computeMonthlyPaymentSummary(purchaseOrders, records, summaryMonth),
-    [purchaseOrders, records, summaryMonth]
+    () => computeMonthlyPaymentSummary(activePurchaseOrders, summaryMonth),
+    [activePurchaseOrders, summaryMonth]
   );
 
   const handleStatusChange = (order: Order, status: string) => {
@@ -568,6 +748,10 @@ function OrderPaymentsTab() {
     if (value === (order.paymentDate ?? "")) {
       return;
     }
+    if (value !== "" && !isValidDueDate(value)) {
+      toast.error("支払期日はYYYY-MM-DD形式（2000〜2100年）で入力してください");
+      return;
+    }
     updateMutation.mutate({
       id: order.id,
       paymentDate: value,
@@ -586,7 +770,12 @@ function OrderPaymentsTab() {
     updateMutation.mutate({
       id: order.id,
       version: order.version,
-      ...nextPaymentTermFields(closingDay, dueDay, monthOffset),
+      ...nextPaymentTermFields(
+        closingDay,
+        dueDay,
+        monthOffset,
+        projectMap.get(order.projectId)?.deliveryMonth ?? undefined
+      ),
     });
   };
 
@@ -598,73 +787,67 @@ function OrderPaymentsTab() {
         yearMonth={summaryMonth}
       />
 
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="flex flex-wrap items-end gap-3">
-          <div className="flex flex-col gap-1">
-            <Label className="text-muted-foreground text-xs">ステータス</Label>
+      <div className="flex flex-nowrap items-end justify-between gap-2">
+        <div className="flex min-w-0 flex-1 flex-nowrap items-end gap-2">
+          <div className="flex min-w-0 shrink flex-col gap-1">
+            <Label className="text-muted-foreground text-xs">
+              支払いステータス
+            </Label>
             <Select
-              onValueChange={(v) =>
-                setStatusFilter(v as (typeof STATUS_FILTER_OPTIONS)[number])
-              }
+              onValueChange={(v) => setStatusFilter(v as StatusFilter)}
               value={statusFilter}
             >
-              <SelectTrigger className="w-36">
+              <SelectTrigger className="w-24" size="sm">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
-                {STATUS_FILTER_OPTIONS.map((s) => (
+                {statusOptions.map((s) => (
                   <SelectItem key={s} value={s}>
-                    {s}
+                    {paymentFilterLabel(s)}
                   </SelectItem>
                 ))}
               </SelectContent>
             </Select>
           </div>
-          <div className="flex flex-col gap-1">
-            <Label className="text-muted-foreground text-xs">
-              支払期日（以降）
-            </Label>
-            <Input
-              className="w-40"
-              onChange={(e) => setDueFrom(e.target.value)}
-              type="date"
-              value={dueFrom}
-            />
-          </div>
-          <div className="flex flex-col gap-1">
-            <Label className="text-muted-foreground text-xs">
-              支払期日（以前）
-            </Label>
-            <Input
-              className="w-40"
-              onChange={(e) => setDueTo(e.target.value)}
-              type="date"
-              value={dueTo}
-            />
-          </div>
-          <div className="flex flex-col gap-1">
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
             <Label className="text-muted-foreground text-xs">検索</Label>
             <Input
-              className="w-64"
+              className="h-8 w-full min-w-0 px-2 text-xs"
               onChange={(e) => setKeyword(e.target.value)}
-              placeholder="#ID・工事名・発注先で検索"
+              placeholder="ID・支払ID・工事名・発注先で検索"
               value={keyword}
             />
           </div>
         </div>
-        <div className="flex flex-wrap items-end gap-3">
+        <div className="flex shrink-0 flex-nowrap items-end gap-2">
           <Button
-            onClick={() => downloadTransferCsv(filtered)}
+            onClick={() => {
+              window.location.href = "/api/export/payments";
+            }}
+            size="sm"
             variant="outline"
           >
-            CSV出力
+            一覧をCSV出力
           </Button>
+          {canSeeBank && (
+            <CsvExportMenu
+              onExport={(excelSafe) =>
+                // オーダー移行（コピー元）案件の発注は、コピー先と二重払いにならないよう振込対象から除く
+                downloadTransferCsv(
+                  filtered.filter(
+                    (o) => !isSuperseded(projectMap.get(o.projectId)?.status)
+                  ),
+                  excelSafe
+                )
+              }
+            />
+          )}
           <OrderColumnsPopover columns={columns} />
         </div>
       </div>
 
       <ScrollableTableSection count={filtered.length}>
-        <Table>
+        <Table className="text-xs [&_td]:px-1 [&_th]:px-1">
           <OrderTableHeaderRow columns={columns.state} />
           <TableBody>
             {isLoading &&
@@ -675,7 +858,14 @@ function OrderPaymentsTab() {
                   </TableCell>
                 </TableRow>
               ))}
-            {!isLoading && filtered.length === 0 && (
+            {isError && !isLoading && (
+              <QueryErrorRow
+                colSpan={visibleColumnCount}
+                message="発注の取得に失敗しました"
+                onRetry={() => refetch()}
+              />
+            )}
+            {!(isLoading || isError) && filtered.length === 0 && (
               <TableRow>
                 <TableCell
                   className="text-center text-muted-foreground"
@@ -685,28 +875,40 @@ function OrderPaymentsTab() {
                 </TableCell>
               </TableRow>
             )}
-            {filtered.map((o) => (
+            {paged.rows.map((o) => (
               <PaymentOrderRow
+                accounts={companyAccounts}
                 columns={columns.state}
                 key={o.id}
                 notes={notesDraft[o.id] ?? o.paymentNotes ?? ""}
+                onAccountChange={(id) =>
+                  updateMutation.mutate({
+                    companyAccountId: id,
+                    id: o.id,
+                    version: o.version,
+                  })
+                }
                 onNotesBlur={() => handleNotesBlur(o)}
                 onNotesChange={(v) =>
                   setNotesDraft((prev) => ({ ...prev, [o.id]: v }))
                 }
-                onOpenHistory={() => setHistoryOrder(o)}
-                onOpenRegister={() => setRegisterOrder(o)}
                 onOpenView={() => setViewOrderId(o.id)}
                 onStatusChange={(status) => handleStatusChange(o, status)}
                 order={o}
                 project={projectMap.get(o.projectId)}
+                superseded={isSuperseded(projectMap.get(o.projectId)?.status)}
               />
             ))}
           </TableBody>
         </Table>
       </ScrollableTableSection>
-
-      <PaymentRecordsSection records={records} />
+      <LoadMore
+        className="px-1 py-1"
+        hasMore={paged.hasMore}
+        onMore={paged.loadMore}
+        shown={paged.shown}
+        total={paged.total}
+      />
 
       <PaymentDetailModal
         onDueDateChange={(v) => viewOrder && handleDueDateChange(viewOrder, v)}
@@ -721,289 +923,34 @@ function OrderPaymentsTab() {
           viewOrder ? vendorIdByCompany.get(viewOrder.vendor ?? "") : undefined
         }
       />
-      <PaymentHistoryDialog
-        onOpenChange={(open) => !open && setHistoryOrder(null)}
-        order={historyOrder}
-        project={
-          historyOrder ? projectMap.get(historyOrder.projectId) : undefined
-        }
-        records={records}
-      />
-      <PaymentRegisterDialog
-        onOpenChange={(open) => !open && setRegisterOrder(null)}
-        order={registerOrder}
-        vendorId={
-          registerOrder
-            ? vendorIdByCompany.get(registerOrder.vendor ?? "")
-            : undefined
-        }
-      />
     </div>
   );
 }
 
-function PaymentHistoryDialog({
-  order,
-  project,
-  records,
-  onOpenChange,
-}: {
-  order: Order | null;
-  project: Project | undefined;
-  records: PaymentRecord[] | undefined;
-  onOpenChange: (open: boolean) => void;
-}) {
-  const utils = api.useUtils();
-
-  const deleteMutation = api.payments.records.delete.useMutation({
-    onSuccess: async () => {
-      await Promise.all([
-        utils.payments.records.list.invalidate(),
-        utils.orders.list.invalidate(),
-      ]);
-      toast.success("支払登録を取消しました");
-    },
-    onError: () => toast.error("取消に失敗しました"),
-  });
-
-  const filtered: PaymentRecord[] = useMemo(() => {
-    if (!(order && records)) {
-      return [];
-    }
-    return records.filter((r) => r.orderId === order.id);
-  }, [records, order]);
-
-  const total = useMemo(
-    () => filtered.reduce((sum, r) => sum + (r.amount ?? 0), 0),
-    [filtered]
-  );
-
-  return (
-    <Dialog onOpenChange={onOpenChange} open={order !== null}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>支払履歴</DialogTitle>
-          {project?.name && (
-            <DialogDescription>{project.name}</DialogDescription>
-          )}
-        </DialogHeader>
-        <div className="flex flex-col gap-3">
-          {!records && <Skeleton className="h-24 w-full" />}
-          {records && filtered.length === 0 && (
-            <p className="rounded-lg border border-dashed py-6 text-center text-muted-foreground text-sm">
-              支払履歴はありません
-            </p>
-          )}
-          {filtered.length > 0 && (
-            <div className="flex items-center justify-between rounded-lg border bg-muted/40 px-4 py-3">
-              <span className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
-                支払済み合計
-              </span>
-              <span className="font-bold text-lg tabular-nums">
-                {money(total)}
-              </span>
-            </div>
-          )}
-          <div className="flex flex-col gap-2">
-            {filtered.map((r) => (
-              <div
-                className="flex items-center justify-between rounded-md border border-l-4 border-l-primary/50 px-3 py-2"
-                key={r.id}
-              >
-                <div className="flex flex-col">
-                  <span className="font-medium tabular-nums">
-                    {money(r.amount)}
-                  </span>
-                  <span className="text-muted-foreground text-xs">
-                    {r.paidDate || "-"} {r.note ? `／ ${r.note}` : ""}
-                  </span>
-                </div>
-                <Button
-                  disabled={deleteMutation.isPending}
-                  onClick={() => deleteMutation.mutate({ id: r.id })}
-                  size="sm"
-                  variant="ghost"
-                >
-                  取消
-                </Button>
-              </div>
-            ))}
-          </div>
-        </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function PaymentRegisterDialog({
-  order,
-  vendorId,
-  onOpenChange,
-}: {
-  order: Order | null;
-  vendorId: string | undefined;
-  onOpenChange: (open: boolean) => void;
-}) {
-  const utils = api.useUtils();
-  const [amount, setAmount] = useState("");
-  const [paidDate, setPaidDate] = useState("");
-  const [note, setNote] = useState("");
-
-  const createMutation = api.payments.records.create.useMutation({
-    onSuccess: async () => {
-      await Promise.all([
-        utils.orders.list.invalidate(),
-        utils.payments.records.list.invalidate(),
-      ]);
-      toast.success("支払を登録しました");
-      onOpenChange(false);
-    },
-    onError: (err) => {
-      if (err.data?.code === "FORBIDDEN") {
-        toast.error("支払登録の権限がありません");
-        return;
-      }
-      toast.error(friendlyErrorMessage(err, "登録に失敗しました"));
-    },
-  });
-
-  const remaining = order ? (order.remaining ?? order.decided ?? 0) : 0;
-
-  // Dialog は open を親から渡されるだけの完全制御コンポーネントであり、親が
-  // order をセットして programmatic に open=true へ切り替えても Radix の
-  // onOpenChange は発火しない（内部の閉じる操作にのみ反応するため）。
-  // そのため、行を切り替えて開き直したときにフォームをリセットするには
-  // order の変化を直接監視する必要がある。
-  // biome-ignore lint/correctness/useExhaustiveDependencies: reset only when the target order changes (by id), not on every background refetch of `order` (a new object each time orders.list refetches)
-  useEffect(() => {
-    if (order) {
-      setAmount("");
-      setPaidDate(new Date().toISOString().slice(0, 10));
-      setNote("");
-    }
-  }, [order?.id]);
-
-  const submit = () => {
-    if (!order) {
-      return;
-    }
-    const value = Number(amount);
-    if (!amount || Number.isNaN(value) || value <= 0) {
-      toast.error("支払額を入力してください");
-      return;
-    }
-    createMutation.mutate({
-      orderId: order.id,
-      amount: value,
-      paidDate: paidDate || undefined,
-      note: note || undefined,
-    });
-  };
-
-  return (
-    <Dialog onOpenChange={onOpenChange} open={order !== null}>
-      <DialogContent className="sm:max-w-lg">
-        <DialogHeader>
-          <DialogTitle>支払登録</DialogTitle>
-          {order?.vendor && (
-            <DialogDescription>{order.vendor}</DialogDescription>
-          )}
-        </DialogHeader>
-        {order && (
-          <div className="flex flex-col gap-5">
-            <div className="grid grid-cols-2 gap-3">
-              <div className="rounded-lg border bg-muted/40 p-4">
-                <p className="font-medium text-[11px] text-muted-foreground uppercase tracking-wide">
-                  現在の残金
-                </p>
-                <p className="font-bold text-2xl text-destructive tabular-nums">
-                  {money(remaining)}
-                </p>
-              </div>
-              <div className="rounded-lg border bg-muted/40 p-4">
-                <p className="font-medium text-[11px] text-muted-foreground uppercase tracking-wide">
-                  費用
-                </p>
-                <p className="font-bold text-2xl tabular-nums">
-                  {money(order.decided)}
-                </p>
-              </div>
-            </div>
-            <div className="rounded-lg border p-4">
-              <p className="mb-3 flex items-center gap-1.5 font-medium text-muted-foreground text-xs">
-                <Building2 className="size-3.5" />
-                振込先口座情報
-              </p>
-              <VendorBankInfoRows vendorId={vendorId} />
-            </div>
-            <div className="flex flex-col gap-2">
-              <Label>支払額</Label>
-              <Input
-                onChange={(e) => setAmount(e.target.value)}
-                type="number"
-                value={amount}
-              />
-              <div className="flex gap-2">
-                <Button
-                  onClick={() => setAmount(String(Math.round(remaining / 2)))}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                >
-                  1/2支払
-                </Button>
-                <Button
-                  onClick={() => setAmount(String(Math.round(remaining / 3)))}
-                  size="sm"
-                  type="button"
-                  variant="outline"
-                >
-                  1/3支払
-                </Button>
-              </div>
-            </div>
-            <div className="grid grid-cols-2 gap-4">
-              <div className="flex flex-col gap-2">
-                <Label>支払日</Label>
-                <Input
-                  onChange={(e) => setPaidDate(e.target.value)}
-                  type="date"
-                  value={paidDate}
-                />
-              </div>
-              <div className="flex flex-col gap-2">
-                <Label>備考</Label>
-                <Input onChange={(e) => setNote(e.target.value)} value={note} />
-              </div>
-            </div>
-          </div>
-        )}
-        <DialogFooter>
-          <Button disabled={createMutation.isPending} onClick={submit}>
-            登録
-          </Button>
-        </DialogFooter>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-/** 支払管理の一覧行（旧app renderPaymentRow 相当）。未払い/部分払いは黄色でハイライトし、行クリックで閲覧専用の支払明細モーダルを開く。 */
+/** 支払管理の一覧行（旧app renderPaymentRow 相当）。未払いは黄色でハイライトし、行クリックで閲覧専用の支払明細モーダルを開く。 */
 /** PaymentOrderRowの#〜発注先までの列（複雑度を抑えるための分割）。 */
 function PaymentOrderIdentityCells({
   columns,
   order: o,
   project,
+  superseded,
 }: {
   columns: OrderTableColumnState;
   order: Order;
   project: Project | undefined;
+  superseded?: boolean;
 }) {
   return (
     <>
-      {columns.id && (
+      {columns.paymentNo && (
         <TableCell className="tabular-nums">
-          #{String(o.id).padStart(6, "0")}
+          <span className="flex items-center gap-2">
+            {o.paymentNo || "-"}
+            {/* 日付列が横スクロールで隠れても気づけるよう、左端の列にも出す */}
+            {!superseded && (
+              <DueWarning date={o.paymentDate} status={o.paymentStatus} />
+            )}
+          </span>
         </TableCell>
       )}
       {columns.projectNo && <TableCell>{project?.projectNo || "-"}</TableCell>}
@@ -1026,26 +973,59 @@ function PaymentOrderIdentityCells({
   );
 }
 
-/** PaymentOrderRowの費用〜支払登録までの列（複雑度を抑えるための分割）。 */
+/** PaymentOrderRowの費用〜備考までの列（複雑度を抑えるための分割）。 */
+/** 工事支払の支払元口座セル。閲覧のみ・オーダー移行済みは名称だけを表示する。 */
+function PaymentAccountCell({
+  accounts,
+  locked,
+  onChange,
+  value,
+}: {
+  accounts: readonly CompanyAccount[] | undefined;
+  locked: boolean;
+  onChange: (id: number | null) => void;
+  value: number | null;
+}) {
+  return (
+    <TableCell onClick={(e) => e.stopPropagation()}>
+      {locked || !accounts ? (
+        <span className="text-muted-foreground">
+          {accounts?.find((a) => a.id === value)?.name ?? "-"}
+        </span>
+      ) : (
+        <CompanyAccountCellSelect
+          accounts={accounts}
+          allowNone={false}
+          onChange={onChange}
+          value={value}
+        />
+      )}
+    </TableCell>
+  );
+}
+
 function PaymentOrderDetailCells({
+  accounts,
   columns,
   order: o,
   notes,
+  onAccountChange,
   onNotesChange,
   onNotesBlur,
-  onOpenHistory,
-  onOpenRegister,
   onStatusChange,
+  superseded,
 }: {
+  accounts: readonly CompanyAccount[] | undefined;
   columns: OrderTableColumnState;
   order: Order;
+  onAccountChange: (id: number | null) => void;
+  superseded: boolean;
   notes: string;
   onNotesChange: (value: string) => void;
   onNotesBlur: () => void;
-  onOpenHistory: () => void;
-  onOpenRegister: () => void;
   onStatusChange: (status: string) => void;
 }) {
+  const { isReadOnly } = useCurrentRole();
   return (
     <>
       {columns.decided && (
@@ -1053,15 +1033,26 @@ function PaymentOrderDetailCells({
           {money(o.decided)}
         </TableCell>
       )}
-      {columns.remaining && (
+      {columns.transferFee && (
         <TableCell className="text-right tabular-nums">
-          {money(o.remaining ?? o.decided)}
+          {o.transferFee == null ? "-" : money(o.transferFee)}
         </TableCell>
+      )}
+      {columns.companyAccount && (
+        <PaymentAccountCell
+          accounts={accounts}
+          locked={isReadOnly || superseded}
+          onChange={onAccountChange}
+          value={o.companyAccountId}
+        />
       )}
       {columns.payment && (
         <TableCell className="max-w-40 truncate" title={o.payment ?? ""}>
           {o.payment || "-"}
         </TableCell>
+      )}
+      {columns.paidOn && (
+        <TableCell className="tabular-nums">{o.paidOn || "-"}</TableCell>
       )}
       {columns.paymentDate && (
         <TableCell className={dueDateClass(o.paymentDate, o.paymentStatus)}>
@@ -1070,27 +1061,40 @@ function PaymentOrderDetailCells({
       )}
       {columns.paymentStatus && (
         <TableCell onClick={(e) => e.stopPropagation()}>
-          <Select
-            onValueChange={onStatusChange}
-            value={o.paymentStatus ?? "未払い"}
-          >
-            <SelectTrigger
+          {superseded && <Badge variant="outline">オーダー移行</Badge>}
+          {!superseded && isReadOnly && (
+            <Badge
               className={cn(
-                "w-32 border-transparent",
+                "w-fit",
                 statusClass(PAYMENT_STATUS_CLASS, o.paymentStatus)
               )}
-              size="sm"
             >
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              {PAYMENT_STATUSES.map((s) => (
-                <SelectItem key={s} value={s}>
-                  {s}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
+              {paymentStatusLabel(o.paymentStatus)}
+            </Badge>
+          )}
+          {!(superseded || isReadOnly) && (
+            <Select
+              onValueChange={onStatusChange}
+              value={normalizePaymentStatus(o.paymentStatus)}
+            >
+              <SelectTrigger
+                className={cn(
+                  "w-32 border-transparent",
+                  statusClass(PAYMENT_STATUS_CLASS, o.paymentStatus)
+                )}
+                size="sm"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {PAYMENT_STATUS_OPTIONS.map((s) => (
+                  <SelectItem key={s} value={s}>
+                    {paymentStatusLabel(s)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          )}
         </TableCell>
       )}
       {columns.notes && (
@@ -1099,66 +1103,108 @@ function PaymentOrderDetailCells({
             className="h-8 w-56 truncate"
             onBlur={onNotesBlur}
             onChange={(e) => onNotesChange(e.target.value)}
+            readOnly={isReadOnly}
             title={notes}
             value={notes}
           />
         </TableCell>
       )}
-      <TableCell onClick={(e) => e.stopPropagation()}>
-        <Button onClick={onOpenHistory} size="icon-sm" variant="ghost">
-          <History className="size-4" />
-        </Button>
-      </TableCell>
-      <TableCell onClick={(e) => e.stopPropagation()}>
-        <Button onClick={onOpenRegister} size="icon-sm" variant="ghost">
-          <Plus className="size-4" />
-        </Button>
-      </TableCell>
     </>
   );
 }
 
 function PaymentOrderRow({
+  accounts,
   columns,
+  onAccountChange,
   order: o,
   project,
   notes,
   onNotesChange,
   onNotesBlur,
-  onOpenHistory,
-  onOpenRegister,
   onOpenView,
   onStatusChange,
+  superseded,
 }: {
+  accounts: readonly CompanyAccount[] | undefined;
   columns: OrderTableColumnState;
+  onAccountChange: (id: number | null) => void;
   order: Order;
   project: Project | undefined;
+  superseded: boolean;
   notes: string;
   onNotesChange: (value: string) => void;
   onNotesBlur: () => void;
-  onOpenHistory: () => void;
-  onOpenRegister: () => void;
   onOpenView: () => void;
   onStatusChange: (status: string) => void;
 }) {
   return (
-    <TableRow className="cursor-pointer" onClick={onOpenView}>
+    <TableRow
+      className={cn(
+        "cursor-pointer",
+        superseded
+          ? "pointer-events-none bg-muted/60 text-muted-foreground opacity-50"
+          : paymentRowClass(o.paymentStatus),
+        !superseded &&
+          dueInfo(o.paymentDate, o.paymentStatus)?.level === "error" &&
+          OVERDUE_ROW_CLASS
+      )}
+      data-focus-id={`order-${o.id}`}
+      onClick={onOpenView}
+      title={
+        superseded
+          ? "オーダー移行済み（新しい案件IDへコピー済み・参照のみ）"
+          : undefined
+      }
+    >
       <PaymentOrderIdentityCells
         columns={columns}
         order={o}
         project={project}
+        superseded={superseded}
       />
       <PaymentOrderDetailCells
+        accounts={accounts}
         columns={columns}
         notes={notes}
+        onAccountChange={onAccountChange}
         onNotesBlur={onNotesBlur}
         onNotesChange={onNotesChange}
-        onOpenHistory={onOpenHistory}
-        onOpenRegister={onOpenRegister}
         onStatusChange={onStatusChange}
         order={o}
+        superseded={superseded}
       />
     </TableRow>
+  );
+}
+
+/** 支払期日入力。入力中はローカル下書きのみ保持し、blur / Enter でだけ確定する。 */
+function DueDateInput({
+  className,
+  disabled,
+  onCommit,
+  value,
+}: {
+  className?: string;
+  disabled?: boolean;
+  onCommit: (value: string) => void;
+  value: string;
+}) {
+  const [draft, setDraft] = useState(value);
+  return (
+    <Input
+      className={cn("h-8 w-40", className)}
+      disabled={disabled}
+      onBlur={() => onCommit(draft)}
+      onChange={(e) => setDraft(e.target.value)}
+      onKeyDown={(e) => {
+        if (e.key === "Enter") {
+          e.currentTarget.blur();
+        }
+      }}
+      type="date"
+      value={draft}
+    />
   );
 }
 
@@ -1182,7 +1228,7 @@ function PaymentDetailModal({
     monthOffset: string
   ) => void;
 }) {
-  const remaining = order ? (order.remaining ?? order.decided ?? 0) : 0;
+  const { canSeeBank, isReadOnly } = useCurrentRole();
   const paymentTermParsed = parsePaymentTermLabel(order?.payment);
   return (
     <Dialog onOpenChange={onOpenChange} open={order !== null}>
@@ -1195,23 +1241,10 @@ function PaymentDetailModal({
         </DialogHeader>
         {order && (
           <div className="flex flex-col gap-6">
-            <div className="grid grid-cols-2 gap-3">
+            <div className="grid grid-cols-1 gap-3">
               <div className="flex flex-col justify-between rounded-lg border bg-muted/40 p-4">
                 <p className="font-medium text-[11px] text-muted-foreground uppercase tracking-wide">
-                  残金
-                </p>
-                <p
-                  className={cn(
-                    "font-bold text-2xl tabular-nums",
-                    remaining > 0 && "text-destructive"
-                  )}
-                >
-                  {money(remaining)}
-                </p>
-              </div>
-              <div className="flex flex-col justify-between rounded-lg border bg-muted/40 p-4">
-                <p className="font-medium text-[11px] text-muted-foreground uppercase tracking-wide">
-                  支払ステータス
+                  支払いステータス
                 </p>
                 <Badge
                   className={cn(
@@ -1219,7 +1252,7 @@ function PaymentDetailModal({
                     statusClass(PAYMENT_STATUS_CLASS, order.paymentStatus)
                   )}
                 >
-                  {order.paymentStatus || "-"}
+                  {paymentStatusLabel(order.paymentStatus)}
                 </Badge>
               </div>
             </div>
@@ -1227,17 +1260,19 @@ function PaymentDetailModal({
             <div className="grid grid-cols-2 gap-4">
               <DetailField label="工種">{order.category || "-"}</DetailField>
               <DetailField label="発注先">{order.vendor || "-"}</DetailField>
-              <DetailField label="費用">
+              <DetailField label="支払ID">{order.paymentNo || "-"}</DetailField>
+              <DetailField label="費用（支払予定額）">
                 <span className="tabular-nums">{money(order.decided)}</span>
               </DetailField>
               <DetailField label="支払期日">
-                <Input
-                  className={cn(
-                    "h-8 w-40",
-                    dueDateClass(order.paymentDate, order.paymentStatus)
+                <DueDateInput
+                  className={dueDateClass(
+                    order.paymentDate,
+                    order.paymentStatus
                   )}
-                  onChange={(e) => onDueDateChange(e.target.value)}
-                  type="date"
+                  disabled={isReadOnly}
+                  key={`${order.id}-${order.paymentDate ?? ""}`}
+                  onCommit={onDueDateChange}
                   value={order.paymentDate ?? ""}
                 />
               </DetailField>
@@ -1254,6 +1289,7 @@ function PaymentDetailModal({
                     支払月
                   </Label>
                   <Select
+                    disabled={isReadOnly}
                     onValueChange={(v) =>
                       onPaymentTermChange("末", paymentTermParsed.dueDay, v)
                     }
@@ -1276,6 +1312,7 @@ function PaymentDetailModal({
                     支払日
                   </Label>
                   <Select
+                    disabled={isReadOnly}
                     onValueChange={(v) =>
                       onPaymentTermChange(
                         "末",
@@ -1303,13 +1340,15 @@ function PaymentDetailModal({
               </div>
             </div>
 
-            <div className="rounded-lg border p-4">
-              <p className="mb-3 flex items-center gap-1.5 font-medium text-muted-foreground text-xs">
-                <Building2 className="size-3.5" />
-                振込先口座情報
-              </p>
-              <VendorBankInfoRows vendorId={vendorId} />
-            </div>
+            {canSeeBank && (
+              <div className="rounded-lg border p-4">
+                <p className="mb-3 flex items-center gap-1.5 font-medium text-muted-foreground text-xs">
+                  <Building2 className="size-3.5" />
+                  振込先口座情報
+                </p>
+                <VendorBankInfoRows vendorId={vendorId} />
+              </div>
+            )}
             <div className="rounded-md bg-muted/30 p-3 text-muted-foreground text-xs">
               支払条件・支払期日はここでの変更が「工事計画」にも反映されます（支払条件を変更すると支払期日も自動計算されます）。金額・ステータスは「工事計画」で管理されます。
             </div>
@@ -1330,421 +1369,5 @@ function PaymentDetailModal({
         </DialogFooter>
       </DialogContent>
     </Dialog>
-  );
-}
-
-/** 常設の支払明細（消し込み履歴）セクション。旧app renderPaymentRecords 相当で、全案件横断の支払登録履歴を常時表示する。 */
-function PaymentRecordsSection({
-  records,
-}: {
-  records: PaymentRecord[] | undefined;
-}) {
-  const utils = api.useUtils();
-  const deleteMutation = api.payments.records.delete.useMutation({
-    onSuccess: async () => {
-      await Promise.all([
-        utils.payments.records.list.invalidate(),
-        utils.orders.list.invalidate(),
-      ]);
-      toast.success("支払登録を取消しました");
-    },
-    onError: () => toast.error("取消に失敗しました"),
-  });
-
-  return (
-    <div className="flex flex-col gap-3">
-      <h2 className="font-bold text-lg">支払明細</h2>
-      <ScrollableTableSection count={records?.length ?? 0}>
-        <Table>
-          <TableHeader className="sticky top-0 z-10 bg-background">
-            <TableRow>
-              <TableHead>支払日</TableHead>
-              <TableHead>工事名</TableHead>
-              <TableHead>発注先</TableHead>
-              <TableHead className="text-right">支払額</TableHead>
-              <TableHead>備考</TableHead>
-              <TableHead />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {!records && (
-              <TableRow>
-                <TableCell colSpan={6}>
-                  <Skeleton className="h-6 w-full" />
-                </TableCell>
-              </TableRow>
-            )}
-            {records && records.length === 0 && (
-              <TableRow>
-                <TableCell
-                  className="text-center text-muted-foreground"
-                  colSpan={6}
-                >
-                  支払登録の履歴がありません
-                </TableCell>
-              </TableRow>
-            )}
-            {(records ?? []).map((r) => (
-              <TableRow key={r.id}>
-                <TableCell className="tabular-nums">
-                  {r.paidDate || "-"}
-                </TableCell>
-                <TableCell
-                  className="max-w-40 truncate"
-                  title={r.projectName ?? ""}
-                >
-                  {r.projectName || `案件#${r.orderId}`}
-                </TableCell>
-                <TableCell className="max-w-28 truncate" title={r.vendor ?? ""}>
-                  {r.vendor || "-"}
-                </TableCell>
-                <TableCell className="text-right tabular-nums">
-                  {money(r.amount)}
-                </TableCell>
-                <TableCell title={r.note ?? ""}>
-                  {r.note ? truncateChars(r.note, NOTES_TRUNCATE_LENGTH) : "-"}
-                </TableCell>
-                <TableCell>
-                  <Button
-                    disabled={deleteMutation.isPending}
-                    onClick={() => deleteMutation.mutate({ id: r.id })}
-                    size="sm"
-                    variant="ghost"
-                  >
-                    取消
-                  </Button>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </ScrollableTableSection>
-    </div>
-  );
-}
-
-// ---------------------------------------------------------------------------
-// 工事外 tab
-// ---------------------------------------------------------------------------
-
-interface MiscFormState {
-  amount: string;
-  category: string;
-  notes: string;
-  payee: string;
-  paymentDate: string;
-  status: string;
-  type: string;
-}
-
-const EMPTY_MISC_FORM: MiscFormState = {
-  category: "",
-  type: "支払",
-  payee: "",
-  amount: "",
-  paymentDate: "",
-  status: "未払い",
-  notes: "",
-};
-
-function toMiscFormState(m: MiscPayment): MiscFormState {
-  return {
-    category: m.category ?? "",
-    type: m.type ?? "支払",
-    payee: m.payee ?? "",
-    amount: m.amount == null ? "" : String(m.amount),
-    paymentDate: m.paymentDate ?? "",
-    status: m.status ?? "未払い",
-    notes: m.notes ?? "",
-  };
-}
-
-function MiscPaymentsTab() {
-  const utils = api.useUtils();
-  const { data: miscPayments, isLoading } = api.payments.misc.list.useQuery();
-  const [editing, setEditing] = useState<MiscPayment | null>(null);
-  const [creating, setCreating] = useState(false);
-  const [form, setForm] = useState<MiscFormState>(EMPTY_MISC_FORM);
-
-  const invalidate = () => utils.payments.misc.list.invalidate();
-
-  const createMutation = api.payments.misc.create.useMutation({
-    onSuccess: async () => {
-      await invalidate();
-      toast.success("登録しました");
-      setCreating(false);
-    },
-    onError: () => toast.error("登録に失敗しました"),
-  });
-  const updateMutation = api.payments.misc.update.useMutation({
-    onSuccess: async () => {
-      await invalidate();
-      toast.success("更新しました");
-      setEditing(null);
-    },
-    onError: () => toast.error("更新に失敗しました"),
-  });
-  const deleteMutation = api.payments.misc.delete.useMutation({
-    onSuccess: async () => {
-      await invalidate();
-      toast.success("削除しました");
-      setEditing(null);
-    },
-    onError: () => toast.error("削除に失敗しました"),
-  });
-
-  const openCreate = () => {
-    setForm(EMPTY_MISC_FORM);
-    setCreating(true);
-  };
-  const openEdit = (m: MiscPayment) => {
-    setEditing(m);
-    setForm(toMiscFormState(m));
-  };
-
-  const validate = () => {
-    const value = Number(form.amount);
-    if (!form.amount || Number.isNaN(value) || value <= 0) {
-      toast.error("金額を入力してください");
-      return null;
-    }
-    return value;
-  };
-
-  const submitCreate = () => {
-    const value = validate();
-    if (value === null) {
-      return;
-    }
-    createMutation.mutate({ ...form, amount: value });
-  };
-  const submitUpdate = () => {
-    if (!editing) {
-      return;
-    }
-    const value = validate();
-    if (value === null) {
-      return;
-    }
-    updateMutation.mutate({ id: editing.id, ...form, amount: value });
-  };
-
-  return (
-    <div className="flex flex-col gap-4">
-      <div className="flex justify-end">
-        <Button onClick={openCreate}>
-          <Plus data-icon="inline-start" />
-          新規登録
-        </Button>
-      </div>
-
-      <ScrollableTableSection count={miscPayments?.length ?? 0}>
-        <Table>
-          <TableHeader className="sticky top-0 z-10 bg-background">
-            <TableRow>
-              <TableHead>#</TableHead>
-              <TableHead>種別</TableHead>
-              <TableHead>区分</TableHead>
-              <TableHead>支払先</TableHead>
-              <TableHead className="text-right">金額</TableHead>
-              <TableHead>支払日</TableHead>
-              <TableHead>ステータス</TableHead>
-              <TableHead>備考</TableHead>
-              <TableHead />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {isLoading &&
-              Array.from({ length: 5 }, (_, i) => (
-                <TableRow key={`skeleton-${i.toString()}`}>
-                  <TableCell colSpan={9}>
-                    <Skeleton className="h-6 w-full" />
-                  </TableCell>
-                </TableRow>
-              ))}
-            {!isLoading && (miscPayments ?? []).length === 0 && (
-              <TableRow>
-                <TableCell
-                  className="text-center text-muted-foreground"
-                  colSpan={9}
-                >
-                  登録されていません
-                </TableCell>
-              </TableRow>
-            )}
-            {(miscPayments ?? []).map((m) => (
-              <TableRow
-                className="cursor-pointer"
-                key={m.id}
-                onClick={() => openEdit(m)}
-              >
-                <TableCell className="tabular-nums">
-                  #{String(m.id).padStart(4, "0")}
-                </TableCell>
-                <TableCell>{m.type || "-"}</TableCell>
-                <TableCell
-                  className="max-w-24 truncate"
-                  title={m.category ?? ""}
-                >
-                  {m.category || "-"}
-                </TableCell>
-                <TableCell className="max-w-28 truncate" title={m.payee ?? ""}>
-                  {m.payee || "-"}
-                </TableCell>
-                <TableCell className="text-right tabular-nums">
-                  {money(m.amount)}
-                </TableCell>
-                <TableCell>{m.paymentDate || "-"}</TableCell>
-                <TableCell>
-                  <Badge
-                    className={statusClass(
-                      PAYMENT_STATUS_CLASS,
-                      m.status || "未払い"
-                    )}
-                  >
-                    {m.status || "未払い"}
-                  </Badge>
-                </TableCell>
-                <TableCell title={m.notes ?? ""}>
-                  {m.notes
-                    ? truncateChars(m.notes, NOTES_TRUNCATE_LENGTH)
-                    : "-"}
-                </TableCell>
-                <TableCell>
-                  <Button
-                    disabled={deleteMutation.isPending}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      deleteMutation.mutate({ id: m.id });
-                    }}
-                    size="sm"
-                    variant="ghost"
-                  >
-                    削除
-                  </Button>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </ScrollableTableSection>
-
-      <Dialog onOpenChange={setCreating} open={creating}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>新規登録</DialogTitle>
-          </DialogHeader>
-          <MiscPaymentForm form={form} setForm={setForm} />
-          <DialogFooter>
-            <Button disabled={createMutation.isPending} onClick={submitCreate}>
-              登録
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
-        onOpenChange={(open) => !open && setEditing(null)}
-        open={editing !== null}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>編集</DialogTitle>
-          </DialogHeader>
-          <MiscPaymentForm form={form} setForm={setForm} />
-          <DialogFooter className="justify-between sm:justify-between">
-            <Button
-              disabled={deleteMutation.isPending}
-              onClick={() =>
-                editing && deleteMutation.mutate({ id: editing.id })
-              }
-              variant="destructive"
-            >
-              削除
-            </Button>
-            <Button disabled={updateMutation.isPending} onClick={submitUpdate}>
-              保存
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-}
-
-function MiscPaymentForm({
-  form,
-  setForm,
-}: {
-  form: MiscFormState;
-  setForm: (f: MiscFormState) => void;
-}) {
-  const set = <K extends keyof MiscFormState>(
-    key: K,
-    value: MiscFormState[K]
-  ) => setForm({ ...form, [key]: value });
-
-  return (
-    <div className="grid grid-cols-2 gap-4">
-      <div className="flex flex-col gap-2">
-        <Label>種別</Label>
-        <Input
-          onChange={(e) => set("type", e.target.value)}
-          value={form.type}
-        />
-      </div>
-      <div className="flex flex-col gap-2">
-        <Label>区分</Label>
-        <Input
-          onChange={(e) => set("category", e.target.value)}
-          value={form.category}
-        />
-      </div>
-      <div className="col-span-2 flex flex-col gap-2">
-        <Label>支払先</Label>
-        <Input
-          onChange={(e) => set("payee", e.target.value)}
-          value={form.payee}
-        />
-      </div>
-      <div className="flex flex-col gap-2">
-        <Label>金額 *</Label>
-        <Input
-          onChange={(e) => set("amount", e.target.value)}
-          type="number"
-          value={form.amount}
-        />
-      </div>
-      <div className="flex flex-col gap-2">
-        <Label>支払日</Label>
-        <Input
-          onChange={(e) => set("paymentDate", e.target.value)}
-          type="date"
-          value={form.paymentDate}
-        />
-      </div>
-      <div className="col-span-2 flex flex-col gap-2">
-        <Label>ステータス</Label>
-        <Select onValueChange={(v) => set("status", v)} value={form.status}>
-          <SelectTrigger className="w-full">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            {PAYMENT_STATUSES.map((s) => (
-              <SelectItem key={s} value={s}>
-                {s}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-      </div>
-      <div className="col-span-2 flex flex-col gap-2">
-        <Label>備考</Label>
-        <Input
-          onChange={(e) => set("notes", e.target.value)}
-          value={form.notes}
-        />
-      </div>
-    </div>
   );
 }

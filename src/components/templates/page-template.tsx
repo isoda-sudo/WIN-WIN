@@ -18,8 +18,12 @@ interface PageTemplateProps {
   children: React.ReactNode;
   className?: string;
   description?: string;
+  /** アプリ本体の画面は、レイアウトがすでに main を持つため、入れ子にならないよう div にする。 */
+  nested?: boolean;
   onBackClick?: () => void;
   showBackButton?: boolean;
+  /** アプリ本体の画面（ヘッダーにダークモード切替がある）では、ここに切替を重ねて出さない。 */
+  showThemeToggle?: boolean;
   title?: string;
 }
 
@@ -30,10 +34,13 @@ export function PageTemplate({
   description,
   action,
   showBackButton = false,
+  showThemeToggle = true,
+  nested = false,
   onBackClick,
 }: PageTemplateProps) {
+  const Wrapper = nested ? "div" : "main";
   return (
-    <main className="flex flex-1 flex-col">
+    <Wrapper className="flex flex-1 flex-col">
       <div className={cn("min-h-full bg-background", className)}>
         {/* Page Header Section */}
         <div className="border-border/40 border-b bg-background">
@@ -65,7 +72,7 @@ export function PageTemplate({
               </div>
               <div className="flex shrink-0 items-center gap-2">
                 {action}
-                <ThemeToggle />
+                {showThemeToggle ? <ThemeToggle /> : null}
               </div>
             </div>
           </div>
@@ -76,7 +83,7 @@ export function PageTemplate({
           {children}
         </div>
       </div>
-    </main>
+    </Wrapper>
   );
 }
 

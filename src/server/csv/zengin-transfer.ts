@@ -1,3 +1,4 @@
+import { excelText, needsExcelText } from "~/server/csv/csv-escape";
 import type { vendors } from "~/server/db/schema";
 
 type VendorRow = typeof vendors.$inferSelect;
@@ -131,12 +132,16 @@ function bankTypeCode(bankType: string | null): string {
   return "";
 }
 
-function csvField(v: string, quote: boolean): string {
+function csvField(v: string, quote: boolean, excelSafe: boolean): string {
+  // Excel用: 先頭が0の数字列（口座番号・日付・コード等）は ="..." で文字列として開かせ、桁を落とさない
+  if (excelSafe && needsExcelText(v)) {
+    return excelText(v);
+  }
   return quote ? `"${v.replace(/"/g, '""')}"` : v;
 }
 
-function buildRecord(fields: [string, boolean][]): string {
-  return fields.map(([v, quote]) => csvField(v, quote)).join(",");
+function buildRecord(fields: [string, boolean][], excelSafe: boolean): string {
+  return fields.map(([v, quote]) => csvField(v, quote, excelSafe)).join(",");
 }
 
 export interface OriginatorInfo {
@@ -170,28 +175,33 @@ const EMPTY_ORIGINATOR: OriginatorInfo = {
 export function buildZenginTransferCsv(
   items: { vendor: string; amount: number; vendorRow: VendorRow | null }[],
   transferDate: Date,
-  originator: Partial<OriginatorInfo> = {}
+  originator: Partial<OriginatorInfo> = {},
+  options: { excelSafe?: boolean } = {}
 ): string {
+  const excelSafe = options.excelSafe === true;
   const o = { ...EMPTY_ORIGINATOR, ...originator };
   const mmdd = `${String(transferDate.getMonth() + 1).padStart(2, "0")}${String(
     transferDate.getDate()
   ).padStart(2, "0")}`;
 
-  const header = buildRecord([
-    [RECORD_KIND_HEADER, false],
-    [TENSAKI_KUBUN, false],
-    [CODE_KUBUN, false],
-    [o.code, false],
-    [o.name, true],
-    [mmdd, false],
-    [o.bankCode, false],
-    [o.bankName, true],
-    [o.branchCode, false],
-    [o.branchName, true],
-    [o.accountType, false],
-    [o.accountNumber, false],
-    [" ", true],
-  ]);
+  const header = buildRecord(
+    [
+      [RECORD_KIND_HEADER, false],
+      [TENSAKI_KUBUN, false],
+      [CODE_KUBUN, false],
+      [o.code, false],
+      [o.name, true],
+      [mmdd, false],
+      [o.bankCode, false],
+      [o.bankName, true],
+      [o.branchCode, false],
+      [o.branchName, true],
+      [o.accountType, false],
+      [o.accountNumber, false],
+      [" ", true],
+    ],
+    excelSafe
+  );
 
   const dataLines = items.map(({ vendor, amount, vendorRow }) => {
     const bankName = vendorRow?.bankName || "";
@@ -199,37 +209,46 @@ export function buildZenginTransferCsv(
     const accountType = bankTypeCode(vendorRow?.bankType ?? null);
     const accountNumber = vendorRow?.bankNumber || "";
     const holderName = toHalfWidthKatakana(vendorRow?.bankHolder || vendor);
-    return buildRecord([
-      [RECORD_KIND_DATA, false],
-      ["", false], // 銀行コード（発注先マスタに未登録のため空欄）
-      [bankName, true],
-      ["", false], // 支店コード（発注先マスタに未登録のため空欄）
-      [branchName, true],
-      [HANDOUT_KIJO_BANGO, false],
-      [accountType, false],
-      [accountNumber, false],
-      [holderName, true],
-      [String(Math.round(amount)), false],
-      [SHINKI_CODE, true],
-      [KOKYAKU_BANGO_1_PLACEHOLDER, true],
-      ["", true],
-      [EDI_KUBUN, false],
-      [" ", true],
-      [" ", true],
-    ]);
+    return buildRecord(
+      [
+        [RECORD_KIND_DATA, false],
+        ["", false], // 銀行コード（発注先マスタに未登録のため空欄）
+        [bankName, true],
+        ["", false], // 支店コード（発注先マスタに未登録のため空欄）
+        [branchName, true],
+        [HANDOUT_KIJO_BANGO, false],
+        [accountType, false],
+        [accountNumber, false],
+        [holderName, true],
+        [String(Math.round(amount)), false],
+        [SHINKI_CODE, true],
+        [KOKYAKU_BANGO_1_PLACEHOLDER, true],
+        ["", true],
+        [EDI_KUBUN, false],
+        [" ", true],
+        [" ", true],
+      ],
+      excelSafe
+    );
   });
 
   const total = items.reduce((s, it) => s + Math.round(it.amount), 0);
-  const trailer = buildRecord([
-    [RECORD_KIND_TRAILER, false],
-    [String(items.length), false],
-    [String(total), false],
-    [" ", true],
-  ]);
-  const end = buildRecord([
-    [RECORD_KIND_END, false],
-    [" ", true],
-  ]);
+  const trailer = buildRecord(
+    [
+      [RECORD_KIND_TRAILER, false],
+      [String(items.length), false],
+      [String(total), false],
+      [" ", true],
+    ],
+    excelSafe
+  );
+  const end = buildRecord(
+    [
+      [RECORD_KIND_END, false],
+      [" ", true],
+    ],
+    excelSafe
+  );
 
   return `${[header, ...dataLines, trailer, end].join("\r\n")}\r\n`;
 }

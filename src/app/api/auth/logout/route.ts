@@ -17,7 +17,9 @@ export const runtime = "nodejs";
  */
 export async function POST(req: NextRequest) {
   const user = await resolveAuthedUser(req.headers);
-  if (user) {
+  // 無操作による自動ログアウト（idle=1）は、他の端末のセッションを巻き込まないよう、この端末のcookieだけ消す。
+  const idle = req.nextUrl.searchParams.get("idle") === "1";
+  if (user && !idle) {
     await db
       .update(users)
       .set({ tokenVersion: sql`${users.tokenVersion} + 1` })

@@ -60,3 +60,16 @@ CLAUDE.local.md
 # mvp-builder: raw uploaded案件資料（議事録・Excel・PDF等）。顧客の機密情報を含みうるため常にgit管理外とする
 /inputs/
 .env*
+
+# ローカル専用の完全版ドキュメント（リポジトリには抜粋のみ置く）
+*.local.md
+
+# キックオフ資料（11MB のバイナリ）は git 管理外
+docs/poc-reference/*.pptx
+
+# CI レビュー用の生成データ（claude-review.yml が作成）
+.review-data/
+
+# 操作動画（容量が大きいためGitに入れない。字幕とレポートは入れる）
+docs/demo/*.mp4
+docs/demo/*.webm

@@ -3,6 +3,7 @@ import { resolveAuthedUser } from "~/server/auth/session";
 
 export const runtime = "nodejs";
 
+const ZIP_TIMEOUT_MS = 5000;
 const ZIP_RE = /^\d{7}$/;
 
 interface ZipcloudResult {
@@ -33,7 +34,8 @@ export async function GET(req: NextRequest) {
 
   try {
     const res = await fetch(
-      `https://zipcloud.ibsnet.co.jp/api/search?zipcode=${zip}`
+      `https://zipcloud.ibsnet.co.jp/api/search?zipcode=${zip}`,
+      { signal: AbortSignal.timeout(ZIP_TIMEOUT_MS) }
     );
     if (!res.ok) {
       throw new Error("zipcloud request failed");
@@ -48,7 +50,10 @@ export async function GET(req: NextRequest) {
     });
   } catch {
     return NextResponse.json(
-      { error: "住所の検索に失敗しました" },
+      {
+        error:
+          "住所検索サービスに接続できませんでした。住所を手入力してください",
+      },
       { status: 502 }
     );
   }

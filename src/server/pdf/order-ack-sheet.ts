@@ -1,4 +1,5 @@
 import PDFDocument from "pdfkit";
+import { calcInvoiceTax } from "~/lib/invoice-tax";
 import type { orders, projects, vendors } from "~/server/db/schema";
 import { COMPANY, toWareki } from "./company";
 import { useJpFont } from "./font";
@@ -127,7 +128,48 @@ export function renderOrderAckSheet(
   doc.fillColor("#000");
 }
 
-/** 注文書・注文請書PDF */
+export interface OrderAckContent {
+  fields: [string, string][];
+  vendorAddr: string;
+  vendorName: string;
+}
+
+/** 注文書・注文請書で共通の項目（工事ID・工事名・請負代金など）と宛先情報を組み立てる。 */
+export function buildOrderAckContent(
+  order: OrderRow,
+  project: ProjectRow | null,
+  vendor: VendorRow | null
+): OrderAckContent {
+  const net = Number(order.decided ?? order.planned ?? order.estimate) || 0;
+  const tax = calcInvoiceTax(net);
+  const total = net + tax;
+  const period =
+    order.periodStart || order.periodEnd
+      ? `着手予定　${order.periodStart || "-"}　～　完成予定　${order.periodEnd || "-"}`
+      : "-";
+  const fields: [string, string][] = [
+    ["工事ID", order.orderNo || "-"],
+    ["担当者", order.assignee || "-"],
+    ["工事名", project ? project.name : order.details || "-"],
+    ["工事内容", order.category || order.details || "-"],
+    ["工事場所", order.site || "-"],
+    ["工事期間", period],
+    ["検査及び引渡し時期\n　　（施主に対して）", order.handover || "-"],
+    [
+      "請負代金",
+      `￥${total.toLocaleString()}（内消費税額　￥${tax.toLocaleString()}　）`,
+    ],
+    ["支払条件／支払方法", order.payment || "-"],
+    ["お支払口座（ご確認用）", formatVendorBank(vendor)],
+  ];
+  return {
+    fields,
+    vendorAddr: vendor?.address || "",
+    vendorName: vendor?.company || order.vendor || "-",
+  };
+}
+
+/** 注文書PDF（1ページ目＝注文書、2ページ目＝注文請書の2ページ構成） */
 export function buildPurchaseOrderPDF(
   order: OrderRow,
   project: ProjectRow | null,
@@ -140,36 +182,13 @@ export function buildPurchaseOrderPDF(
     doc.on("end", () => resolve(Buffer.concat(chunks)));
     doc.on("error", reject);
     useJpFont(doc);
-    const net = Number(order.decided ?? order.planned ?? order.estimate) || 0;
-    const tax = Math.floor(net * 0.1);
-    const total = net + tax;
-    const vendorName = vendor?.company || order.vendor || "-";
-    const vendorAddr = vendor?.address || "";
-    const period =
-      order.periodStart || order.periodEnd
-        ? `着手予定　${order.periodStart || "-"}　～　完成予定　${order.periodEnd || "-"}`
-        : "-";
-    const fields: [string, string][] = [
-      ["工事ID", order.orderNo || "-"],
-      ["担当者", order.assignee || "-"],
-      ["工事名", project ? project.name : order.details || "-"],
-      ["工事内容", order.category || order.details || "-"],
-      ["工事場所", order.site || "-"],
-      ["工事期間", period],
-      ["検査及び引渡し時期\n　　（施主に対して）", order.handover || "-"],
-      [
-        "請負代金",
-        `￥${total.toLocaleString()}（内消費税額　￥${tax.toLocaleString()}　）`,
-      ],
-      ["支払条件／支払方法", order.payment || "-"],
-      ["お支払口座（ご確認用）", formatVendorBank(vendor)],
-    ];
+    const content = buildOrderAckContent(order, project, vendor);
     renderOrderAckSheet(doc, "order", {
-      vendorName,
-      vendorAddr,
-      fields,
+      ...content,
       wareki: toWareki(new Date()),
     });
+    doc.addPage();
+    renderOrderAckSheet(doc, "ack", { ...content, wareki: null });
     doc.end();
   });
 }

@@ -1,7 +1,9 @@
 "use client";
 
 import { cloneElement, isValidElement, useEffect, useRef } from "react";
-import { Table } from "~/components/ui/table";
+import { Button } from "~/components/ui/button";
+import { Table, TableCell, TableRow } from "~/components/ui/table";
+import { useEditLocked } from "~/lib/use-edit-lock";
 import { cn } from "~/lib/utils";
 
 /** 一覧テーブルで「全画面表示」に切り替える件数のしきい値。 */
@@ -24,12 +26,23 @@ function useAxisLockedWheelScroll<T extends HTMLElement>() {
 
     const onWheel = (e: WheelEvent) => {
       const horizontalDominant = Math.abs(e.deltaX) > Math.abs(e.deltaY);
+      // 端に達している方向へのスクロールはブラウザ標準（ページスクロール）に任せる
       if (horizontalDominant) {
-        if (el.scrollWidth > el.clientWidth) {
+        const max = el.scrollWidth - el.clientWidth;
+        const atEdge =
+          (e.deltaX < 0 && el.scrollLeft <= 0) ||
+          (e.deltaX > 0 && el.scrollLeft >= max - 1);
+        if (max > 0 && !atEdge) {
           e.preventDefault();
           el.scrollLeft += e.deltaX;
         }
-      } else if (el.scrollHeight > el.clientHeight) {
+        return;
+      }
+      const maxY = el.scrollHeight - el.clientHeight;
+      const atEdgeY =
+        (e.deltaY < 0 && el.scrollTop <= 0) ||
+        (e.deltaY > 0 && el.scrollTop >= maxY - 1);
+      if (maxY > 0 && !atEdgeY) {
         e.preventDefault();
         el.scrollTop += e.deltaY;
       }
@@ -67,6 +80,8 @@ export function ScrollableTableSection({
   threshold?: number;
 }) {
   const scrollable = count >= threshold;
+  // 他の人が編集中の間は、表内の入力・ボタンを無効にして閲覧のみにする（排他制御）
+  const locked = useEditLocked();
   const ref = useAxisLockedWheelScroll<HTMLDivElement>();
   const content =
     isValidElement(children) && children.type === Table
@@ -91,7 +106,35 @@ export function ScrollableTableSection({
       )}
       ref={ref}
     >
-      {content}
+      {locked ? (
+        <fieldset className="contents" disabled>
+          {content}
+        </fieldset>
+      ) : (
+        content
+      )}
     </div>
+  );
+}
+
+/** 一覧取得失敗時にテーブル内へ表示するエラー行（再試行ボタン付き）。 */
+export function TableErrorRow({
+  colSpan,
+  onRetry,
+}: {
+  colSpan: number;
+  onRetry: () => void;
+}) {
+  return (
+    <TableRow>
+      <TableCell className="text-center" colSpan={colSpan}>
+        <div className="flex flex-col items-center gap-2 py-2">
+          <p className="text-destructive text-sm">データの取得に失敗しました</p>
+          <Button onClick={onRetry} size="sm" variant="outline">
+            再試行
+          </Button>
+        </div>
+      </TableCell>
+    </TableRow>
   );
 }

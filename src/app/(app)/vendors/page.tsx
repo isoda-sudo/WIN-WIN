@@ -3,7 +3,13 @@
 import { Plus } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
-import { ContactListEditor } from "~/components/shared/contact-list-editor";
+import { BankSelect } from "~/components/shared/bank-select";
+import { BranchSelect } from "~/components/shared/branch-select";
+import {
+  ContactListEditor,
+  cleanContacts,
+} from "~/components/shared/contact-list-editor";
+import { LoadMore } from "~/components/shared/load-more";
 import { ScrollableTableSection } from "~/components/shared/scrollable-table";
 import { useZipCodeLookup } from "~/components/shared/use-zip-lookup";
 import { Badge } from "~/components/ui/badge";
@@ -35,14 +41,15 @@ import {
   TableRow,
 } from "~/components/ui/table";
 import { type EmailContact, toContactList } from "~/lib/contacts";
+import { compareAsc, compareDesc, type SortOption } from "~/lib/list-sort";
 import {
   PAYMENT_DUE_DAY_CHOICES,
   PAYMENT_DUE_MONTH_OFFSETS,
   type PaymentClosingDay,
-  type PaymentDueDay,
   type PaymentDueMonthOffset,
   withCurrentValue,
 } from "~/lib/payment-term";
+import { useSortedPagedList } from "~/lib/use-sorted-paged-list";
 import { api, type RouterOutputs } from "~/trpc/react";
 
 // 発注先マスタの支払条件は、引き渡しが月末締めのみで運用されているため、
@@ -52,6 +59,25 @@ import { api, type RouterOutputs } from "~/trpc/react";
 // 黙って書き換えないよう選択肢に含めて表示する。
 
 type VendorListItem = RouterOutputs["vendors"]["list"][number];
+
+const SORT_OPTIONS: SortOption<VendorListItem>[] = [
+  {
+    compare: (a, b) => compareAsc(a.id, b.id),
+    label: "ID昇順",
+    value: "id-asc",
+  },
+  {
+    compare: (a, b) => compareDesc(a.id, b.id),
+    label: "登録降順",
+    value: "id-desc",
+  },
+  {
+    compare: (a, b) =>
+      compareAsc(a.company, b.company) || compareDesc(a.id, b.id),
+    label: "名称順",
+    value: "name-asc",
+  },
+];
 type VendorDetail = RouterOutputs["vendors"]["getById"];
 
 interface FormState {
@@ -70,7 +96,7 @@ interface FormState {
   dept: string;
   email: string;
   paymentClosingDay: PaymentClosingDay;
-  paymentDueDay: PaymentDueDay;
+  paymentDueDay: string;
   paymentDueMonthOffset: PaymentDueMonthOffset;
   phone: string;
   toContacts: EmailContact[];
@@ -120,7 +146,7 @@ function toFormState(v: VendorDetail): FormState {
     email: v.email ?? "",
     // 締め日は常に月末締め固定（旧データの値は画面には出さない）。
     paymentClosingDay: "末",
-    paymentDueDay: (v.paymentDueDay as PaymentDueDay | null) ?? "末",
+    paymentDueDay: v.paymentDueDay ?? "5",
     paymentDueMonthOffset:
       (v.paymentDueMonthOffset as PaymentDueMonthOffset | null) ?? "1",
     phone: v.phone ?? "",
@@ -142,7 +168,12 @@ function parseCategories(categories: string | null): string[] {
 
 export default function VendorsPage() {
   const utils = api.useUtils();
-  const { data: vendors, isLoading } = api.vendors.list.useQuery();
+  const {
+    data: vendors,
+    isLoading,
+    isError,
+    refetch,
+  } = api.vendors.list.useQuery();
   const { data: categories } = api.categories.list.useQuery();
   const { data: me } = api.users.me.useQuery();
   const canEdit = me?.role === "admin";
@@ -152,8 +183,30 @@ export default function VendorsPage() {
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
 
+  const filtered = useMemo(() => {
+    if (!vendors) {
+      return [];
+    }
+    const kw = keyword.trim().toLowerCase();
+    if (!kw) {
+      return vendors;
+    }
+    return vendors.filter(
+      (v) =>
+        v.company.toLowerCase().includes(kw) ||
+        (v.contact ?? "").toLowerCase().includes(kw)
+    );
+  }, [vendors, keyword]);
+
+  const paged = useSortedPagedList({
+    options: SORT_OPTIONS,
+    resetKey: keyword,
+    rows: filtered,
+  });
+
   const createMutation = api.vendors.create.useMutation({
     onSuccess: async () => {
+      paged.setSortKey(SORT_OPTIONS[0]?.value ?? "");
       await utils.vendors.list.invalidate();
       toast.success("発注先を登録しました");
       setCreating(false);
@@ -176,21 +229,6 @@ export default function VendorsPage() {
     },
     onError: () => toast.error("削除に失敗しました"),
   });
-
-  const filtered = useMemo(() => {
-    if (!vendors) {
-      return [];
-    }
-    const kw = keyword.trim().toLowerCase();
-    if (!kw) {
-      return vendors;
-    }
-    return vendors.filter(
-      (v) =>
-        v.company.toLowerCase().includes(kw) ||
-        (v.contact ?? "").toLowerCase().includes(kw)
-    );
-  }, [vendors, keyword]);
 
   const openEdit = async (row: VendorListItem) => {
     if (!canEdit) {
@@ -216,45 +254,65 @@ export default function VendorsPage() {
     setCreating(true);
   };
 
+  const buildPayload = () => {
+    const to = cleanContacts(form.toContacts, "TO担当者");
+    const cc = cleanContacts(form.ccContacts, "CC関係者");
+    const error = to.error ?? cc.error;
+    if (error) {
+      toast.error(error);
+      return null;
+    }
+    // 旧データの支払日（10/20/25日）はサーバーが受け付けないため、
+    // 選択肢外の値が未変更のまま保存される場合は項目ごと送らず既存値を保持する。
+    const { paymentDueDay, ...rest } = form;
+    const dueDay = PAYMENT_DUE_DAY_CHOICES.find((d) => d === paymentDueDay);
+    return {
+      ...rest,
+      ...(dueDay ? { paymentDueDay: dueDay } : {}),
+      toContacts: to.contacts,
+      ccContacts: cc.contacts,
+      capital: form.capital ? Number(form.capital) : null,
+    };
+  };
   const submitCreate = () => {
     if (!form.company.trim()) {
       toast.error("必須項目を入力してください");
       return;
     }
-    createMutation.mutate({
-      ...form,
-      capital: form.capital ? Number(form.capital) : null,
-    });
+    const payload = buildPayload();
+    if (payload) {
+      createMutation.mutate(payload);
+    }
   };
   const submitUpdate = () => {
     if (!editing) {
       return;
     }
-    updateMutation.mutate({
-      id: editing.id,
-      ...form,
-      capital: form.capital ? Number(form.capital) : null,
-    });
+    const payload = buildPayload();
+    if (payload) {
+      updateMutation.mutate({ id: editing.id, ...payload });
+    }
   };
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3">
         <div>
           <h1 className="font-bold text-2xl">発注先マスタ</h1>
           <p className="text-muted-foreground text-sm">
             工事を発注する協力会社・仕入先を管理します
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-nowrap items-end gap-2">
           <Input
-            className="w-56"
+            className="h-8 min-w-32 flex-1"
             onChange={(e) => setKeyword(e.target.value)}
             placeholder="会社名・担当者名で検索"
             value={keyword}
           />
+
           {canEdit && (
-            <Button onClick={openCreate}>
+            <Button className="h-8 shrink-0" onClick={openCreate}>
               <Plus data-icon="inline-start" />
               新規発注先登録
             </Button>
@@ -263,7 +321,7 @@ export default function VendorsPage() {
       </div>
 
       <ScrollableTableSection count={filtered.length}>
-        <Table>
+        <Table className="text-xs [&_td]:px-1 [&_th]:px-1">
           <TableHeader className="sticky top-0 z-10 bg-background">
             <TableRow>
               <TableHead>#</TableHead>
@@ -286,7 +344,27 @@ export default function VendorsPage() {
                   </TableCell>
                 </TableRow>
               ))}
-            {!isLoading && filtered.length === 0 && (
+            {isError && (
+              <TableRow>
+                <TableCell
+                  className="text-center text-muted-foreground"
+                  colSpan={9}
+                >
+                  <div className="flex flex-col items-center gap-2 py-2">
+                    <span>発注先一覧の取得に失敗しました</span>
+                    <Button
+                      onClick={() => refetch()}
+                      size="sm"
+                      type="button"
+                      variant="outline"
+                    >
+                      再試行
+                    </Button>
+                  </div>
+                </TableCell>
+              </TableRow>
+            )}
+            {!(isLoading || isError) && filtered.length === 0 && (
               <TableRow>
                 <TableCell
                   className="text-center text-muted-foreground"
@@ -296,7 +374,7 @@ export default function VendorsPage() {
                 </TableCell>
               </TableRow>
             )}
-            {filtered.map((v) => (
+            {paged.rows.map((v) => (
               <TableRow
                 aria-disabled={loadingDetailId === v.id}
                 className={canEdit ? "cursor-pointer" : undefined}
@@ -340,6 +418,13 @@ export default function VendorsPage() {
           </TableBody>
         </Table>
       </ScrollableTableSection>
+      <LoadMore
+        className="px-1 py-1"
+        hasMore={paged.hasMore}
+        onMore={paged.loadMore}
+        shown={paged.shown}
+        total={paged.total}
+      />
 
       <Dialog onOpenChange={setCreating} open={creating}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">
@@ -540,15 +625,16 @@ function VendorForm({
         <div className="grid grid-cols-2 gap-4">
           <div className="flex flex-col gap-2">
             <Label>銀行名</Label>
-            <Input
-              onChange={(e) => set("bankName", e.target.value)}
+            <BankSelect
+              onChange={(v) => set("bankName", v)}
               value={form.bankName}
             />
           </div>
           <div className="flex flex-col gap-2">
             <Label>支店名</Label>
-            <Input
-              onChange={(e) => set("bankBranch", e.target.value)}
+            <BranchSelect
+              bankName={form.bankName}
+              onChange={(v) => set("bankBranch", v)}
               value={form.bankBranch}
             />
           </div>
@@ -605,7 +691,7 @@ function VendorForm({
             </SelectContent>
           </Select>
           <Select
-            onValueChange={(v) => set("paymentDueDay", v as PaymentDueDay)}
+            onValueChange={(v) => set("paymentDueDay", v)}
             value={form.paymentDueDay}
           >
             <SelectTrigger className="w-36">

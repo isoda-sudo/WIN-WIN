@@ -13,7 +13,7 @@ import { categories } from "~/server/db/schema";
 export const categoriesRouter = createTRPCRouter({
   list: masterReadableProcedure.query(async () =>
     db.query.categories.findMany({
-      orderBy: (t, { asc }) => [asc(t.order)],
+      orderBy: (t, { asc }) => [asc(t.order), asc(t.id)],
     })
   ),
 
@@ -21,7 +21,6 @@ export const categoriesRouter = createTRPCRouter({
     .input(
       z.object({
         name: z.string().min(1),
-        order: z.number().nullish(),
         note: z.string().nullish(),
       })
     )
@@ -40,7 +39,6 @@ export const categoriesRouter = createTRPCRouter({
         .values({
           code,
           name: input.name,
-          order: input.order,
           note: input.note,
         })
         .returning({ id: categories.id });
@@ -55,7 +53,6 @@ export const categoriesRouter = createTRPCRouter({
         id: row.id,
         code,
         name: input.name,
-        order: input.order,
         note: input.note,
       };
     }),
@@ -66,7 +63,6 @@ export const categoriesRouter = createTRPCRouter({
         id: z.number(),
         code: z.string(),
         name: z.string().min(1),
-        order: z.number().nullish(),
         note: z.string().nullish(),
       })
     )
@@ -79,7 +75,6 @@ export const categoriesRouter = createTRPCRouter({
         .set({
           code: input.code,
           name: input.name,
-          order: input.order,
           note: input.note,
         })
         .where(eq(categories.id, input.id));

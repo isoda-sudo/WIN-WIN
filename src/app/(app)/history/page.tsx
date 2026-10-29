@@ -1,7 +1,11 @@
 "use client";
 
-import { useMemo, useState } from "react";
-import { ScrollableTableSection } from "~/components/shared/scrollable-table";
+import { useEffect, useMemo, useState } from "react";
+import { LoadMore } from "~/components/shared/load-more";
+import {
+  ScrollableTableSection,
+  TableErrorRow,
+} from "~/components/shared/scrollable-table";
 import { Badge } from "~/components/ui/badge";
 import {
   Select,
@@ -20,7 +24,10 @@ import {
   TableRow,
 } from "~/components/ui/table";
 import { canViewHistoryTable } from "~/lib/history-access";
-import { api } from "~/trpc/react";
+import { LIST_PAGE_SIZE } from "~/lib/list-sort";
+import { api, type RouterOutputs } from "~/trpc/react";
+
+type AuditLog = RouterOutputs["auditLogs"]["list"]["rows"][number];
 
 const TABLE_NAME_OPTIONS: { value: string; label: string }[] = [
   { value: "all", label: "すべて" },
@@ -29,8 +36,17 @@ const TABLE_NAME_OPTIONS: { value: string; label: string }[] = [
   { value: "customers", label: "顧客マスタ" },
   { value: "vendors", label: "発注先マスタ" },
   { value: "categories", label: "工種マスタ" },
-  { value: "receipts", label: "売上・入金管理" },
+  { value: "banks", label: "銀行マスタ" },
   { value: "invitations", label: "アカウント発行" },
+  { value: "company_accounts", label: "自社口座" },
+  { value: "transfer_fee_rules", label: "振込手数料ルール" },
+  { value: "payment_categories", label: "支払い種別マスタ" },
+  { value: "receipt_categories", label: "収入区分マスタ" },
+  { value: "misc_payments", label: "工事外支払い" },
+  { value: "recurring_payments", label: "定期支払い" },
+  { value: "misc_receipts", label: "工事外売上" },
+  { value: "recurring_receipts", label: "定期売上" },
+  { value: "users", label: "アカウント" },
 ];
 
 // 表示用ラベルはフィルタ選択肢より広い（invoices/usersはフィルタ対象では
@@ -38,7 +54,6 @@ const TABLE_NAME_OPTIONS: { value: string; label: string }[] = [
 const TABLE_NAME_LABELS: Record<string, string> = {
   ...Object.fromEntries(TABLE_NAME_OPTIONS.map((o) => [o.value, o.label])),
   invoices: "受注一覧",
-  users: "ログイン",
 };
 
 const ACTION_OPTIONS: { value: string; label: string }[] = [
@@ -93,32 +108,70 @@ export default function HistoryPage() {
   const [action, setAction] = useState("all");
   const { data: me } = api.users.me.useQuery();
 
-  const { data: logs, isLoading } = api.auditLogs.list.useQuery(
+  const filters = {
+    ...(tableName === "all" ? {} : { tableName }),
+    ...(action === "all" ? {} : { action }),
+  };
+  const {
+    data,
+    fetchNextPage,
+    hasNextPage,
+    isFetchingNextPage,
+    isLoading,
+    isError,
+    refetch,
+  } = api.auditLogs.list.useInfiniteQuery(filters, {
+    getNextPageParam: (last) => last.nextOffset ?? undefined,
+    initialCursor: 0,
+  });
+  // 絞り込み候補は、履歴に実在する対象画面・操作だけ（選択中の値は消さない）
+  const { data: facets } = api.auditLogs.facets.useQuery(
     tableName === "all" ? {} : { tableName }
   );
 
+  const filtered = useMemo<AuditLog[]>(
+    () => (data?.pages ?? []).flatMap((p) => p.rows),
+    [data]
+  );
+  const total = data?.pages[0]?.total ?? 0;
+
+  // 画面に出す件数は20件ずつ増やす。読み込み済みを超える分はサーバーから次の100件を取得する。
+  const [visible, setVisible] = useState(LIST_PAGE_SIZE);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 絞り込み変更時のリセットが目的
+  useEffect(() => {
+    setVisible(LIST_PAGE_SIZE);
+  }, [tableName, action]);
+  useEffect(() => {
+    if (visible > filtered.length && hasNextPage && !isFetchingNextPage) {
+      fetchNextPage();
+    }
+  }, [
+    visible,
+    filtered.length,
+    hasNextPage,
+    isFetchingNextPage,
+    fetchNextPage,
+  ]);
+  const shown = Math.min(visible, filtered.length);
+
   // 対象画面ドロップダウンは、そのロールが閲覧できるtableNameのみ表示する
   // （サーバー側でも同じ判定を行うが、選べない選択肢を出さないため画面側でも絞る）。
-  const tableNameOptions = useMemo(
-    () =>
-      TABLE_NAME_OPTIONS.filter(
-        (o) =>
-          o.value === "all" ||
-          !me?.role ||
-          canViewHistoryTable(me.role, o.value)
-      ),
-    [me?.role]
-  );
-
-  const filtered = useMemo(() => {
-    if (!logs) {
-      return [];
-    }
-    if (action === "all") {
-      return logs;
-    }
-    return logs.filter((log) => log.action === action);
-  }, [logs, action]);
+  const tableNameOptions = useMemo(() => {
+    const used = new Set(facets?.tableNames ?? []);
+    return TABLE_NAME_OPTIONS.filter(
+      (o) =>
+        o.value === "all" ||
+        o.value === tableName ||
+        (used.has(o.value) &&
+          (!me?.role || canViewHistoryTable(me.role, o.value)))
+    );
+  }, [me?.role, facets, tableName]);
+  const actionOptions = useMemo(() => {
+    const used = new Set(facets?.actions ?? []);
+    return ACTION_OPTIONS.filter(
+      (o) => o.value === "all" || o.value === action || used.has(o.value)
+    );
+  }, [facets, action]);
 
   return (
     <div className="flex flex-col gap-6">
@@ -129,11 +182,13 @@ export default function HistoryPage() {
         </p>
       </div>
 
-      <div className="flex items-center gap-4">
-        <div className="flex items-center gap-2">
-          <span className="text-muted-foreground text-sm">対象画面</span>
+      <div className="flex flex-nowrap items-end gap-2">
+        <div className="flex shrink-0 items-center gap-2">
+          <span className="whitespace-nowrap text-muted-foreground text-xs">
+            対象画面
+          </span>
           <Select onValueChange={setTableName} value={tableName}>
-            <SelectTrigger className="w-40">
+            <SelectTrigger className="h-8 w-36" size="sm">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
@@ -145,14 +200,16 @@ export default function HistoryPage() {
             </SelectContent>
           </Select>
         </div>
-        <div className="flex items-center gap-2">
-          <span className="text-muted-foreground text-sm">操作</span>
+        <div className="flex shrink-0 items-center gap-2">
+          <span className="whitespace-nowrap text-muted-foreground text-xs">
+            操作
+          </span>
           <Select onValueChange={setAction} value={action}>
-            <SelectTrigger className="w-32">
+            <SelectTrigger className="h-8 w-28" size="sm">
               <SelectValue />
             </SelectTrigger>
             <SelectContent>
-              {ACTION_OPTIONS.map((o) => (
+              {actionOptions.map((o) => (
                 <SelectItem key={o.value} value={o.value}>
                   {o.label}
                 </SelectItem>
@@ -162,10 +219,10 @@ export default function HistoryPage() {
         </div>
       </div>
 
-      <p className="text-muted-foreground text-sm">全 {filtered.length} 件</p>
+      <p className="text-muted-foreground text-sm">全 {total} 件</p>
 
-      <ScrollableTableSection count={filtered.length}>
-        <Table>
+      <ScrollableTableSection count={total}>
+        <Table className="text-xs [&_td]:px-1 [&_th]:px-1">
           <TableHeader className="sticky top-0 z-10 bg-background">
             <TableRow>
               <TableHead>日時</TableHead>
@@ -185,7 +242,8 @@ export default function HistoryPage() {
                   </TableCell>
                 </TableRow>
               ))}
-            {!isLoading && filtered.length === 0 && (
+            {isError && <TableErrorRow colSpan={6} onRetry={() => refetch()} />}
+            {!(isLoading || isError) && filtered.length === 0 && (
               <TableRow>
                 <TableCell
                   className="text-center text-muted-foreground"
@@ -195,7 +253,7 @@ export default function HistoryPage() {
                 </TableCell>
               </TableRow>
             )}
-            {filtered.map((log) => {
+            {filtered.slice(0, visible).map((log) => {
               const details = isAuditLogDetails(log.details)
                 ? log.details
                 : undefined;
@@ -231,7 +289,7 @@ export default function HistoryPage() {
                       <div className="flex flex-col gap-0.5">
                         {changes.map((c, i) => (
                           <span key={`${log.id}-change-${i.toString()}`}>
-                            {c}
+                            {localizeChange(c)}
                           </span>
                         ))}
                       </div>
@@ -246,6 +304,27 @@ export default function HistoryPage() {
           </TableBody>
         </Table>
       </ScrollableTableSection>
+      <LoadMore
+        className="px-1 py-1"
+        hasMore={shown < total}
+        onMore={() => setVisible((v) => v + LIST_PAGE_SIZE)}
+        shown={shown}
+        total={total}
+      />
     </div>
   );
+}
+
+const ACCOUNT_STATUS_LABEL: Record<string, string> = {
+  active: "有効",
+  deleted: "削除済み",
+  suspended: "停止",
+};
+const STATUS_WORD_RE = /\b(active|suspended|deleted)\b/g;
+
+/** 以前の履歴に英語（active / suspended）のまま残っているアカウントのステータスを、日本語で表示する。 */
+function localizeChange(change: string): string {
+  return change.startsWith("ステータス変更:")
+    ? change.replace(STATUS_WORD_RE, (w) => ACCOUNT_STATUS_LABEL[w] ?? w)
+    : change;
 }

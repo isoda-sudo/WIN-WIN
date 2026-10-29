@@ -1,23 +1,21 @@
 "use client";
 
-import {
-  ClipboardList,
-  Clock,
-  Columns3,
-  FileText,
-  History,
-  Plus,
-  Trash2,
-  Wallet,
-} from "lucide-react";
+import { ClipboardList, Eye, FileText, Wallet } from "lucide-react";
 import Link from "next/link";
+import { useSearchParams } from "next/navigation";
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
+import {
+  type CompanyAccount,
+  CompanyAccountCellSelect,
+  defaultAccountId,
+} from "~/components/shared/company-account-select";
 import { DetailField } from "~/components/shared/detail-field";
+import { LoadMore } from "~/components/shared/load-more";
 import { MonthNav } from "~/components/shared/month-nav";
-import { MonthPicker } from "~/components/shared/month-picker";
 import { ScrollableTableSection } from "~/components/shared/scrollable-table";
 import { SummaryCard } from "~/components/shared/summary-card";
+import { WarningBadge } from "~/components/shared/warning-badge";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Checkbox } from "~/components/ui/checkbox";
@@ -53,30 +51,62 @@ import {
   TableRow,
 } from "~/components/ui/table";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "~/components/ui/tabs";
-import { Textarea } from "~/components/ui/textarea";
-import { PAY_STATUS_OPTIONS, payStatusToProjectStatus } from "~/lib/pay-status";
+import { compareDesc, type SortOption } from "~/lib/list-sort";
+import { PAY_STATUS_OPTIONS, type PayStatus } from "~/lib/pay-status";
+import { computeMonthlyReceiptSummary } from "~/lib/receipt-summary";
 import {
-  projectRowClass,
+  OVERDUE_ROW_CLASS,
+  PROJECT_ROW_HOVER_CLASS,
   RECEIPT_STATUS_CLASS,
+  receiptRowClass,
   simplifiedContractClass,
   simplifiedContractLabel,
   statusClass,
 } from "~/lib/status-styles";
-import { cn, truncateChars } from "~/lib/utils";
-import { currentYearMonth } from "~/lib/year-month";
+import { useCurrentRole } from "~/lib/use-current-role";
+import {
+  EditLockBanner,
+  EditLockedProvider,
+  useEditLock,
+} from "~/lib/use-edit-lock";
+import {
+  focusSearchKeyword,
+  readFocusParams,
+  useFocusDeepLink,
+} from "~/lib/use-focus-deep-link";
+import { useSortedPagedList } from "~/lib/use-sorted-paged-list";
+import { cn } from "~/lib/utils";
+import { currentYearMonth, isDateInYearMonth } from "~/lib/year-month";
 import { api, type RouterOutputs } from "~/trpc/react";
+import { NonConstructionReceiptsTab } from "./_components/non-construction-receipts-tab";
 
 type SalesRow = RouterOutputs["receipts"]["salesSummary"][number];
-type ReceiptRow = RouterOutputs["receipts"]["list"][number];
-type MiscRow = RouterOutputs["receipts"]["misc"]["list"][number];
 
-const RECEIPTS_TABLE_COLUMN_COUNT = 6;
-const MISC_TABLE_COLUMN_COUNT = 9;
+function buildProjectSortOptions(
+  deliveryMonthById: ReadonlyMap<number, string | null>
+): SortOption<SalesRow>[] {
+  return [
+    { value: "registered", label: "ID昇順", compare: (a, b) => a.id - b.id },
+    {
+      value: "deliveryMonth",
+      label: "引渡月降順",
+      compare: (a, b) =>
+        compareDesc(deliveryMonthById.get(a.id), deliveryMonthById.get(b.id)) ||
+        b.id - a.id,
+    },
+    {
+      value: "amount",
+      label: "契約金額降順",
+      compare: (a, b) =>
+        compareDesc(a.contractAmount, b.contractAmount) || b.id - a.id,
+    },
+  ];
+}
+
 const NUMERIC_ONLY_RE = /^\d+$/;
-const NOTES_TRUNCATE_LENGTH = 15;
 
 // ===== 表示項目（列の表示/非表示、幅の広い列を隠して画面幅に収める） =====
-// 消し込み履歴・入金登録の操作列以外はすべてこの表示項目トグルで制御する。
+// すべての列をこの表示項目トグルで制御する。
 const PROJECT_TABLE_OPTIONAL_COLUMNS = [
   "projectNo",
   "client",
@@ -85,17 +115,15 @@ const PROJECT_TABLE_OPTIONAL_COLUMNS = [
   "invoiceIssued",
   "completion",
   "contractAmount",
-  "thisMonthReceived",
-  "prevReceived",
-  "cumReceived",
-  "completedReceivable",
-  "advanceReceived",
+  "receivedAmount",
+  "companyAccount",
   "payStatus",
   "notes",
 ] as const;
 type ProjectTableColumn = (typeof PROJECT_TABLE_OPTIONAL_COLUMNS)[number];
 type ProjectTableColumnState = Record<ProjectTableColumn, boolean>;
-const PROJECT_TABLE_COLUMN_STORAGE_KEY = "receipts-project-columns";
+// 列構成を変えたため旧キー（receipts-project-columns）は読まない
+const PROJECT_TABLE_COLUMN_STORAGE_KEY = "receipts-project-columns-v2";
 
 function defaultProjectTableColumnState(): ProjectTableColumnState {
   return {
@@ -106,11 +134,8 @@ function defaultProjectTableColumnState(): ProjectTableColumnState {
     invoiceIssued: true,
     completion: true,
     contractAmount: true,
-    thisMonthReceived: true,
-    prevReceived: true,
-    cumReceived: true,
-    completedReceivable: true,
-    advanceReceived: true,
+    receivedAmount: true,
+    companyAccount: true,
     payStatus: true,
     notes: true,
   };
@@ -159,14 +184,11 @@ const PROJECT_TABLE_COLUMN_LABELS = [
   ["name", "工事名"],
   ["status", "契約"],
   ["invoiceIssued", "請求書発行状態"],
-  ["completion", "未完/入金日"],
+  ["completion", "入金日"],
   ["contractAmount", "請負金額"],
-  ["thisMonthReceived", "当月入金額"],
-  ["prevReceived", "前月までの入金額"],
-  ["cumReceived", "入金額累計"],
-  ["completedReceivable", "完成工事未収入金"],
-  ["advanceReceived", "未成工事受入金"],
-  ["payStatus", "ステータス"],
+  ["receivedAmount", "入金額"],
+  ["companyAccount", "入金先口座"],
+  ["payStatus", "入金ステータス"],
   ["notes", "備考"],
 ] as const;
 
@@ -178,8 +200,8 @@ function ProjectReceiptsColumnsPopover({
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button variant="outline">
-          <Columns3 data-icon="inline-start" />
+        <Button className="shrink-0" size="sm" variant="outline">
+          <Eye data-icon="inline-start" />
           表示項目
         </Button>
       </PopoverTrigger>
@@ -207,6 +229,71 @@ function ProjectReceiptsColumnsPopover({
   );
 }
 
+/** 一覧の失敗（再試行付き）/ 空状態を1行で表示する。 */
+function QueryStateRow({
+  colSpan,
+  emptyMessage,
+  errorMessage,
+  isEmpty,
+  isError,
+  onRetry,
+}: {
+  colSpan: number;
+  emptyMessage: string;
+  errorMessage: string;
+  isEmpty: boolean;
+  isError: boolean;
+  onRetry: () => void;
+}) {
+  if (isError) {
+    return (
+      <QueryErrorRow
+        colSpan={colSpan}
+        message={errorMessage}
+        onRetry={onRetry}
+      />
+    );
+  }
+  if (!isEmpty) {
+    return null;
+  }
+  return (
+    <TableRow>
+      <TableCell
+        className="text-center text-muted-foreground"
+        colSpan={colSpan}
+      >
+        {emptyMessage}
+      </TableCell>
+    </TableRow>
+  );
+}
+
+/** 一覧クエリ失敗時の表内エラー行（再試行ボタン付き）。 */
+function QueryErrorRow({
+  colSpan,
+  message,
+  onRetry,
+}: {
+  colSpan: number;
+  message: string;
+  onRetry: () => void;
+}) {
+  return (
+    <TableRow>
+      <TableCell
+        className="text-center text-muted-foreground"
+        colSpan={colSpan}
+      >
+        <p className="mb-2">{message}</p>
+        <Button onClick={onRetry} size="xs" variant="outline">
+          再試行
+        </Button>
+      </TableCell>
+    </TableRow>
+  );
+}
+
 function ProjectReceiptsTableHeaderRow({
   columns,
 }: {
@@ -220,29 +307,16 @@ function ProjectReceiptsTableHeaderRow({
         {columns.name && <TableHead>工事名</TableHead>}
         {columns.status && <TableHead>契約</TableHead>}
         {columns.invoiceIssued && <TableHead>請求書発行状態</TableHead>}
-        {columns.completion && <TableHead>未完/入金日</TableHead>}
+        {columns.completion && <TableHead>入金日</TableHead>}
         {columns.contractAmount && (
           <TableHead className="text-right">請負金額</TableHead>
         )}
-        {columns.thisMonthReceived && (
-          <TableHead className="text-right">当月入金額</TableHead>
+        {columns.receivedAmount && (
+          <TableHead className="text-right">入金額</TableHead>
         )}
-        {columns.prevReceived && (
-          <TableHead className="text-right">前月までの入金額</TableHead>
-        )}
-        {columns.cumReceived && (
-          <TableHead className="text-right">入金額累計</TableHead>
-        )}
-        {columns.completedReceivable && (
-          <TableHead className="text-right">完成工事未収入金</TableHead>
-        )}
-        {columns.advanceReceived && (
-          <TableHead className="text-right">未成工事受入金</TableHead>
-        )}
-        {columns.payStatus && <TableHead>ステータス</TableHead>}
+        {columns.companyAccount && <TableHead>入金先口座</TableHead>}
+        {columns.payStatus && <TableHead>入金ステータス</TableHead>}
         {columns.notes && <TableHead>備考</TableHead>}
-        <TableHead />
-        <TableHead />
       </TableRow>
     </TableHeader>
   );
@@ -252,29 +326,7 @@ function yen(n: number | null | undefined) {
   return `¥${(n ?? 0).toLocaleString()}`;
 }
 
-/** 売上・入金管理の月間サマリ（指定月の入金予定・実績・未入金件数）。 */
-function computeMonthlyReceiptSummary(
-  rows: SalesRow[] | undefined,
-  allReceipts: ReceiptRow[] | undefined,
-  yearMonth: string
-): { received: number; scheduled: number; unpaidCount: number } {
-  const dueThisMonth = (rows ?? []).filter((r) =>
-    (r.dueDate ?? "").startsWith(yearMonth)
-  );
-  const scheduled = dueThisMonth.reduce(
-    (sum, r) => sum + Math.max(0, r.outstanding ?? 0),
-    0
-  );
-  const unpaidCount = dueThisMonth.filter(
-    (r) => r.payStatus !== "入金済"
-  ).length;
-  const received = (allReceipts ?? [])
-    .filter((r) => (r.receivedDate ?? "").startsWith(yearMonth))
-    .reduce((sum, r) => sum + (r.amount ?? 0), 0);
-  return { scheduled, received, unpaidCount };
-}
-
-/** 売上・入金管理の月間サマリ（入金予定・実績・未入金件数）と月移動ナビゲーション。 */
+/** 売上管理表の月間サマリ（入金予定・実績・未入金件数）と月移動ナビゲーション。 */
 function MonthlySalesSummary({
   onMonthChange,
   summary,
@@ -301,7 +353,14 @@ function MonthlySalesSummary({
 
 type SalesRowForFilter = Pick<
   RouterOutputs["receipts"]["salesSummary"][number],
-  "client" | "dueDate" | "id" | "name" | "payStatus" | "projectNo"
+  | "client"
+  | "dueDate"
+  | "dueDates"
+  | "id"
+  | "name"
+  | "paidDate"
+  | "payStatus"
+  | "projectNo"
 >;
 
 // 数字のみの入力は#（案件の一意なid）への完全一致とみなす。工事名は引渡月変更による
@@ -325,6 +384,7 @@ interface ReceiptFilters {
   dueTo: string;
   keyword: string;
   statusFilter: string;
+  yearMonth: string;
 }
 
 function matchesReceiptFilters(
@@ -332,6 +392,16 @@ function matchesReceiptFilters(
   f: ReceiptFilters
 ): boolean {
   if (f.statusFilter !== "all" && r.payStatus !== f.statusFilter) {
+    return false;
+  }
+  // 選択月が一覧の絞り込み軸（支払い予定表と同じ）。入金期日（分割請求は、どの請求書でも）か入金日がその月のものを出す。
+  if (
+    !(
+      r.dueDates.some((d) => isDateInYearMonth(d, f.yearMonth)) ||
+      isDateInYearMonth(r.dueDate, f.yearMonth) ||
+      isDateInYearMonth(r.paidDate, f.yearMonth)
+    )
+  ) {
     return false;
   }
   if (f.dueFrom && (!r.dueDate || r.dueDate < f.dueFrom)) {
@@ -344,31 +414,47 @@ function matchesReceiptFilters(
 }
 
 export default function ReceiptsPage() {
+  const lock = useEditLock("receipts");
   return (
     <div className="flex flex-col gap-6">
       <div>
-        <h1 className="font-bold text-2xl">売上・入金管理</h1>
+        <h1 className="font-bold text-2xl">売上管理表</h1>
         <p className="text-muted-foreground text-sm">
-          案件ごとの入金状況および案件外の入出金を管理します
+          案件ごとの入金状況と、工事外売上（賃貸収入・備品売上など）を管理します
         </p>
       </div>
-      <Tabs defaultValue="project">
-        <TabsList>
-          <TabsTrigger value="project">案件</TabsTrigger>
-          <TabsTrigger value="misc">案件外</TabsTrigger>
-        </TabsList>
-        <TabsContent value="project">
-          <ProjectReceiptsTab />
-        </TabsContent>
-        <TabsContent value="misc">
-          <MiscReceiptsTab />
-        </TabsContent>
-      </Tabs>
+      <EditLockBanner
+        freed={lock.freed}
+        holder={lock.holder}
+        locked={lock.locked}
+      />
+      <EditLockedProvider value={lock.locked}>
+        <Tabs defaultValue="project">
+          <TabsList>
+            <TabsTrigger value="project">工事売上</TabsTrigger>
+            <TabsTrigger value="non-construction">工事外売上</TabsTrigger>
+          </TabsList>
+          <TabsContent className="mt-4" value="project">
+            <ProjectReceiptsTab />
+          </TabsContent>
+          <TabsContent className="mt-4" value="non-construction">
+            <NonConstructionReceiptsTab />
+          </TabsContent>
+        </Tabs>
+      </EditLockedProvider>
     </div>
   );
 }
 
-/** ProjectReceiptRowの案件ID〜未完/入金日までの列（複雑度を抑えるための分割）。 */
+/** 請求書の入金期日を過ぎているのに未入金のものか（売上管理表の警告）。 */
+function isReceiptOverdue(r: SalesRow): boolean {
+  if (!r.dueDate || r.payStatus !== "未入金") {
+    return false;
+  }
+  return r.dueDate < new Date().toLocaleDateString("sv-SE");
+}
+
+/** ProjectReceiptRowの案件ID〜入金日までの列（複雑度を抑えるための分割）。 */
 function ProjectReceiptIdentityCells({
   columns,
   row: r,
@@ -380,7 +466,14 @@ function ProjectReceiptIdentityCells({
     <>
       {columns.projectNo && (
         <TableCell className="tabular-nums">
-          {r.projectNo || `#${r.id}`}
+          <span className="flex items-center gap-2">
+            {r.projectNo || `#${r.id}`}
+            {isReceiptOverdue(r) && (
+              <WarningBadge
+                message={`入金期日（${r.dueDate}）を過ぎていますが、まだ入金が確認できていません。`}
+              />
+            )}
+          </span>
         </TableCell>
       )}
       {columns.client && (
@@ -411,36 +504,33 @@ function ProjectReceiptIdentityCells({
         </TableCell>
       )}
       {columns.completion && (
-        <TableCell
-          className={r.completed ? "tabular-nums" : "text-destructive"}
-        >
-          {r.completed ? r.lastReceiptDate || "完成" : "未完"}
-        </TableCell>
+        <TableCell className="tabular-nums">{r.paidDate || "-"}</TableCell>
       )}
     </>
   );
 }
 
-/** ProjectReceiptRowの請負金額〜登録操作までの列（複雑度を抑えるための分割）。 */
+/** ProjectReceiptRowの請負金額〜備考までの列（複雑度を抑えるための分割）。 */
 function ProjectReceiptAmountCells({
+  accounts,
   columns,
   notesValue,
+  onAccountChange,
   onNotesBlur,
   onNotesChange,
-  onOpenHistory,
-  onOpenRegister,
   onStatusChange,
   row: r,
 }: {
+  accounts: readonly CompanyAccount[] | undefined;
   columns: ProjectTableColumnState;
+  onAccountChange: (id: number | null) => void;
   notesValue: string;
   onNotesBlur: () => void;
   onNotesChange: (value: string) => void;
-  onOpenHistory: () => void;
-  onOpenRegister: () => void;
   onStatusChange: (value: string) => void;
   row: SalesRow;
 }) {
+  const { isReadOnly } = useCurrentRole();
   return (
     <>
       {columns.contractAmount && (
@@ -448,34 +538,43 @@ function ProjectReceiptAmountCells({
           {yen(r.contractAmount)}
         </TableCell>
       )}
-      {columns.thisMonthReceived && (
+      {columns.receivedAmount && (
         <TableCell className="text-right tabular-nums">
-          {yen(r.thisMonthReceived)}
+          {yen(r.receivedAmount)}
         </TableCell>
       )}
-      {columns.prevReceived && (
-        <TableCell className="text-right tabular-nums">
-          {yen(r.prevReceived)}
-        </TableCell>
-      )}
-      {columns.cumReceived && (
-        <TableCell className="text-right tabular-nums">
-          {yen(r.cumReceived)}
-        </TableCell>
-      )}
-      {columns.completedReceivable && (
-        <TableCell className="text-right tabular-nums">
-          {yen(r.completedReceivable)}
-        </TableCell>
-      )}
-      {columns.advanceReceived && (
-        <TableCell className="text-right tabular-nums">
-          {yen(r.advanceReceived)}
+      {columns.companyAccount && (
+        <TableCell onClick={(e) => e.stopPropagation()}>
+          {isReadOnly || !accounts ? (
+            <span className="text-muted-foreground">
+              {accounts?.find(
+                (a) =>
+                  a.id === (r.companyAccountId ?? defaultAccountId(accounts))
+              )?.name ?? "-"}
+            </span>
+          ) : (
+            <CompanyAccountCellSelect
+              accounts={accounts}
+              allowNone={false}
+              onChange={onAccountChange}
+              value={r.companyAccountId}
+            />
+          )}
         </TableCell>
       )}
       {columns.payStatus && (
         <TableCell onClick={(e) => e.stopPropagation()}>
-          {r.payStatus ? (
+          {r.payStatus && isReadOnly && (
+            <Badge
+              className={cn(
+                "w-fit",
+                statusClass(RECEIPT_STATUS_CLASS, r.payStatus)
+              )}
+            >
+              {r.payStatus}
+            </Badge>
+          )}
+          {r.payStatus && !isReadOnly && (
             <Select onValueChange={onStatusChange} value={r.payStatus}>
               <SelectTrigger
                 className={cn(
@@ -493,7 +592,8 @@ function ProjectReceiptAmountCells({
                 ))}
               </SelectContent>
             </Select>
-          ) : (
+          )}
+          {!r.payStatus && (
             <span className="text-muted-foreground text-sm">-</span>
           )}
         </TableCell>
@@ -504,59 +604,56 @@ function ProjectReceiptAmountCells({
             className="h-8 w-56 truncate"
             onBlur={onNotesBlur}
             onChange={(e) => onNotesChange(e.target.value)}
+            readOnly={isReadOnly}
             title={notesValue}
             value={notesValue}
           />
         </TableCell>
       )}
-      <TableCell onClick={(e) => e.stopPropagation()}>
-        <Button onClick={onOpenHistory} size="icon-sm" variant="ghost">
-          <History />
-        </Button>
-      </TableCell>
-      <TableCell onClick={(e) => e.stopPropagation()}>
-        <Button onClick={onOpenRegister} size="icon-sm" variant="ghost">
-          <Plus />
-        </Button>
-      </TableCell>
     </>
   );
 }
 
 function ProjectReceiptRow({
+  accounts,
   columns,
   notesValue,
+  onAccountChange,
   onNotesBlur,
   onNotesChange,
   onOpenDetail,
-  onOpenHistory,
-  onOpenRegister,
   onStatusChange,
   row: r,
 }: {
+  accounts: readonly CompanyAccount[] | undefined;
   columns: ProjectTableColumnState;
   notesValue: string;
+  onAccountChange: (id: number | null) => void;
   onNotesBlur: () => void;
   onNotesChange: (value: string) => void;
   onOpenDetail: () => void;
-  onOpenHistory: () => void;
-  onOpenRegister: () => void;
   onStatusChange: (value: string) => void;
   row: SalesRow;
 }) {
   return (
     <TableRow
-      className={cn("cursor-pointer", projectRowClass(r.status))}
+      className={cn(
+        "cursor-pointer",
+        receiptRowClass(r.payStatus),
+        isReceiptOverdue(r) && OVERDUE_ROW_CLASS,
+        PROJECT_ROW_HOVER_CLASS
+      )}
+      data-focus-id={`project-${r.id}`}
       onClick={onOpenDetail}
     >
       <ProjectReceiptIdentityCells columns={columns} row={r} />
       <ProjectReceiptAmountCells
+        accounts={accounts}
         columns={columns}
         notesValue={notesValue}
+        onAccountChange={onAccountChange}
         onNotesBlur={onNotesBlur}
         onNotesChange={onNotesChange}
-        onOpenHistory={onOpenHistory}
-        onOpenRegister={onOpenRegister}
         onStatusChange={onStatusChange}
         row={r}
       />
@@ -564,70 +661,64 @@ function ProjectReceiptRow({
   );
 }
 
-interface RegisterForm {
-  amount: string;
-  memo: string;
-  month: string;
-  receivedDate: string;
-}
-
-const EMPTY_REGISTER_FORM: RegisterForm = {
-  receivedDate: "",
-  month: "",
-  amount: "",
-  memo: "",
-};
-
 function ProjectReceiptsTab() {
   const utils = api.useUtils();
-  const { data: rows, isLoading } = api.receipts.salesSummary.useQuery();
-  const { data: allReceipts } = api.receipts.list.useQuery();
+  const {
+    data: rows,
+    isLoading,
+    isError,
+    refetch,
+  } = api.receipts.salesSummary.useQuery();
   const columns = useProjectTableColumnVisibility();
-  const [summaryMonth, setSummaryMonth] = useState(currentYearMonth);
+  // 通知の「詳細を見る」で開かれたときは、最初からIDで1件に絞り込む
+  const focusParams = readFocusParams(useSearchParams());
+  const [summaryMonth, setSummaryMonth] = useState(
+    () => focusParams.month ?? currentYearMonth()
+  );
 
   const [statusFilter, setStatusFilter] = useState("all");
   const [dueFrom, setDueFrom] = useState("");
   const [dueTo, setDueTo] = useState("");
-  const [keyword, setKeyword] = useState("");
+  const [keyword, setKeyword] = useState(focusParams.q ?? "");
 
-  const [historyProject, setHistoryProject] = useState<SalesRow | null>(null);
-  const [registerProject, setRegisterProject] = useState<SalesRow | null>(null);
   const [detailProject, setDetailProject] = useState<SalesRow | null>(null);
-  const [registerForm, setRegisterForm] =
-    useState<RegisterForm>(EMPTY_REGISTER_FORM);
   const [notesDraft, setNotesDraft] = useState<Record<number, string>>({});
 
-  const invalidateAll = () =>
-    Promise.all([
-      utils.receipts.list.invalidate(),
-      utils.receipts.salesSummary.invalidate(),
-    ]);
-
-  const createReceiptMutation = api.receipts.create.useMutation({
-    onSuccess: async () => {
-      await invalidateAll();
-      toast.success("入金を登録しました");
-      setRegisterProject(null);
-    },
-    onError: () => toast.error("登録に失敗しました"),
-  });
-
-  const deleteReceiptMutation = api.receipts.delete.useMutation({
-    onSuccess: async () => {
-      await invalidateAll();
-      toast.success("入金を削除しました");
-    },
-    onError: () => toast.error("削除に失敗しました"),
-  });
+  const invalidateAll = () => utils.receipts.salesSummary.invalidate();
 
   const updateNotesMutation = api.projects.updateReceiptNotes.useMutation({
     onSuccess: () => invalidateAll(),
     onError: () => toast.error("備考の更新に失敗しました"),
   });
 
-  const updateStatusMutation = api.projects.update.useMutation({
+  // 自社口座マスタは管理者・経理だけが読める（閲覧のみのロールには出さない）
+  const { isReadOnly: readOnlyRole } = useCurrentRole();
+  const { data: companyAccounts } = api.companyAccounts.list.useQuery(
+    undefined,
+    { enabled: !readOnlyRole }
+  );
+  const updateAccountMutation = api.receipts.updateProjectAccount.useMutation({
     onSuccess: () => invalidateAll(),
-    onError: () => toast.error("ステータス更新に失敗しました"),
+    onError: (err) => {
+      toast.error(err.message || "入金先口座の更新に失敗しました");
+      invalidateAll();
+    },
+  });
+  const updateStatusMutation = api.projects.updateReceiptStatus.useMutation({
+    onSuccess: () => invalidateAll(),
+    onError: (err) => {
+      if (err.data?.code === "CONFLICT") {
+        toast.error("他の人が案件を更新しました。再読み込みしました");
+        invalidateAll();
+        return;
+      }
+      if (err.data?.code === "BAD_REQUEST") {
+        toast.error(err.message);
+        invalidateAll();
+        return;
+      }
+      toast.error("ステータス更新に失敗しました");
+    },
   });
 
   const handleNotesBlur = (row: SalesRow) => {
@@ -638,91 +729,103 @@ function ProjectReceiptsTab() {
     updateNotesMutation.mutate({ id: row.id, value: draft });
   };
 
+  // 入金ステータスの候補は、売上サマリーに実在するものだけ（選択中の値は消さない）
+  const statusOptions = useMemo(() => {
+    const existing = new Set((rows ?? []).map((r) => r.payStatus));
+    return PAY_STATUS_OPTIONS.filter(
+      (s) => existing.has(s) || s === statusFilter
+    );
+  }, [rows, statusFilter]);
+
   const filtered = useMemo(() => {
     if (!rows) {
       return [];
     }
     return rows.filter((r) =>
-      matchesReceiptFilters(r, { statusFilter, dueFrom, dueTo, keyword })
+      matchesReceiptFilters(r, {
+        statusFilter,
+        dueFrom,
+        dueTo,
+        keyword,
+        yearMonth: summaryMonth,
+      })
     );
-  }, [rows, statusFilter, dueFrom, dueTo, keyword]);
+  }, [rows, statusFilter, dueFrom, dueTo, keyword, summaryMonth]);
 
-  const receiptsByProject = useMemo(() => {
-    const map = new Map<number, SalesRow>();
-    for (const r of rows ?? []) {
-      map.set(r.id, r);
+  // 売上サマリーには引渡月が無いため、案件一覧から引いて並び替えに使う
+  const { data: projectList } = api.projects.list.useQuery();
+  const sortOptions = useMemo(
+    () =>
+      buildProjectSortOptions(
+        new Map((projectList ?? []).map((p) => [p.id, p.deliveryMonth]))
+      ),
+    [projectList]
+  );
+  const paged = useSortedPagedList({
+    options: sortOptions,
+    resetKey: [statusFilter, dueFrom, dueTo, keyword, summaryMonth].join("|"),
+    rows: filtered,
+  });
+
+  // 通知の「詳細を見る」（?focus=project-ID）: 対象の案件が見える状態にして、行まで移動する
+  const [revealAll, setRevealAll] = useState(false);
+  const { showAll: showAllRows } = paged;
+  useEffect(() => {
+    if (revealAll) {
+      showAllRows();
+      setRevealAll(false);
     }
-    return map;
-  }, [rows]);
+  }, [revealAll, showAllRows]);
+  useFocusDeepLink({
+    ready: Boolean(rows),
+    resolve: (ids) => {
+      const target = rows?.find((r) => ids.includes(`project-${r.id}`));
+      const date = target?.dueDate ?? target?.paidDate;
+      if (date) {
+        setSummaryMonth(date.slice(0, 7));
+      }
+      setStatusFilter("all");
+      setDueFrom("");
+      setDueTo("");
+      setKeyword(focusSearchKeyword(ids));
+      setRevealAll(true);
+    },
+  });
 
   const monthlySummary = useMemo(
-    () => computeMonthlyReceiptSummary(rows, allReceipts, summaryMonth),
-    [rows, allReceipts, summaryMonth]
+    () => computeMonthlyReceiptSummary(rows ?? [], summaryMonth),
+    [rows, summaryMonth]
   );
 
-  // 固定列（消し込み履歴・登録)2列 + トグル可能な列
-  const visibleColumnCount =
-    2 + Object.values(columns.state).filter(Boolean).length;
-
-  const openRegister = (row: SalesRow) => {
-    setRegisterForm(EMPTY_REGISTER_FORM);
-    setRegisterProject(row);
-  };
-
-  const submitRegister = () => {
-    if (!(registerForm.receivedDate.trim() && registerForm.amount.trim())) {
-      toast.error("入金日と入金額は必須です");
-      return;
-    }
-    const amount = Number(registerForm.amount);
-    if (!(amount > 0)) {
-      toast.error("金額を入力してください");
-      return;
-    }
-    if (!registerProject) {
-      return;
-    }
-    createReceiptMutation.mutate({
-      projectId: registerProject.id,
-      receivedDate: registerForm.receivedDate,
-      amount,
-      month: registerForm.month || null,
-      memo: registerForm.memo || null,
-    });
-  };
-
-  const historyReceipts: ReceiptRow[] = useMemo(() => {
-    if (!(historyProject && allReceipts)) {
-      return [];
-    }
-    return allReceipts.filter((r) => r.projectId === historyProject.id);
-  }, [allReceipts, historyProject]);
+  const visibleColumnCount = Object.values(columns.state).filter(
+    Boolean
+  ).length;
 
   const exportCsv = () => {
     window.location.href = "/api/export/sales";
   };
 
   return (
-    <div className="flex flex-col gap-6 pt-4">
+    <div className="flex flex-col gap-6">
       <MonthlySalesSummary
         onMonthChange={setSummaryMonth}
         summary={monthlySummary}
         yearMonth={summaryMonth}
       />
 
-      <div className="flex flex-wrap items-end justify-between gap-3">
-        <div className="flex flex-wrap items-end gap-3">
-          <div className="flex flex-col gap-1">
+      <div className="flex flex-nowrap items-end justify-between gap-2">
+        <div className="flex min-w-0 flex-1 flex-nowrap items-end gap-2">
+          <div className="flex min-w-0 shrink flex-col gap-1">
             <Label className="text-muted-foreground text-xs">
               入金ステータス
             </Label>
             <Select onValueChange={setStatusFilter} value={statusFilter}>
-              <SelectTrigger className="w-36">
+              <SelectTrigger className="w-24" size="sm">
                 <SelectValue />
               </SelectTrigger>
               <SelectContent>
                 <SelectItem value="all">すべて</SelectItem>
-                {PAY_STATUS_OPTIONS.map((s) => (
+                {statusOptions.map((s) => (
                   <SelectItem key={s} value={s}>
                     {s}
                   </SelectItem>
@@ -730,48 +833,53 @@ function ProjectReceiptsTab() {
               </SelectContent>
             </Select>
           </div>
-          <div className="flex flex-col gap-1">
+          <div className="flex min-w-0 shrink flex-col gap-1">
             <Label className="text-muted-foreground text-xs">
               入金期日（以降）
             </Label>
             <Input
-              className="w-40"
+              className="h-8 w-28 px-2 text-xs"
               onChange={(e) => setDueFrom(e.target.value)}
               type="date"
               value={dueFrom}
             />
           </div>
-          <div className="flex flex-col gap-1">
+          <div className="flex min-w-0 shrink flex-col gap-1">
             <Label className="text-muted-foreground text-xs">
               入金期日（以前）
             </Label>
             <Input
-              className="w-40"
+              className="h-8 w-28 px-2 text-xs"
               onChange={(e) => setDueTo(e.target.value)}
               type="date"
               value={dueTo}
             />
           </div>
-          <div className="flex flex-col gap-1">
+          <div className="flex min-w-0 flex-1 flex-col gap-1">
             <Label className="text-muted-foreground text-xs">検索</Label>
             <Input
-              className="w-64"
+              className="h-8 w-full min-w-0 px-2 text-xs"
               onChange={(e) => setKeyword(e.target.value)}
               placeholder="案件ID・工事名・発注者で検索"
               value={keyword}
             />
           </div>
         </div>
-        <div className="flex flex-wrap items-end gap-3">
-          <Button onClick={exportCsv} variant="outline">
+        <div className="flex shrink-0 flex-nowrap items-end gap-2">
+          <Button
+            className="shrink-0"
+            onClick={exportCsv}
+            size="sm"
+            variant="outline"
+          >
             CSV出力
           </Button>
           <ProjectReceiptsColumnsPopover columns={columns} />
         </div>
       </div>
 
-      <ScrollableTableSection count={filtered.length}>
-        <Table>
+      <ScrollableTableSection count={paged.rows.length}>
+        <Table className="text-xs [&_td]:px-1 [&_th]:px-1">
           <ProjectReceiptsTableHeaderRow columns={columns.state} />
           <TableBody>
             {isLoading &&
@@ -782,33 +890,38 @@ function ProjectReceiptsTab() {
                   </TableCell>
                 </TableRow>
               ))}
-            {!isLoading && filtered.length === 0 && (
-              <TableRow>
-                <TableCell
-                  className="text-center text-muted-foreground"
-                  colSpan={visibleColumnCount}
-                >
-                  該当する案件がありません
-                </TableCell>
-              </TableRow>
+            {!isLoading && (
+              <QueryStateRow
+                colSpan={visibleColumnCount}
+                emptyMessage="該当する案件がありません"
+                errorMessage="案件の取得に失敗しました"
+                isEmpty={filtered.length === 0}
+                isError={isError}
+                onRetry={() => refetch()}
+              />
             )}
-            {filtered.map((r) => (
+            {paged.rows.map((r) => (
               <ProjectReceiptRow
+                accounts={companyAccounts}
                 columns={columns.state}
                 key={r.id}
                 notesValue={notesDraft[r.id] ?? r.receiptNotes ?? ""}
+                onAccountChange={(id) =>
+                  updateAccountMutation.mutate({
+                    companyAccountId: id,
+                    id: r.id,
+                  })
+                }
                 onNotesBlur={() => handleNotesBlur(r)}
                 onNotesChange={(v) =>
                   setNotesDraft((prev) => ({ ...prev, [r.id]: v }))
                 }
                 onOpenDetail={() => setDetailProject(r)}
-                onOpenHistory={() => setHistoryProject(r)}
-                onOpenRegister={() => openRegister(r)}
                 onStatusChange={(v) =>
                   updateStatusMutation.mutate({
                     id: r.id,
-                    status: payStatusToProjectStatus(v),
-                    version: r.version,
+                    payStatus: v as PayStatus,
+                    version: r.version ?? 1,
                   })
                 }
                 row={r}
@@ -817,214 +930,13 @@ function ProjectReceiptsTab() {
           </TableBody>
         </Table>
       </ScrollableTableSection>
-
-      <h2 className="font-bold text-lg">入金明細</h2>
-      <ScrollableTableSection count={allReceipts?.length ?? 0}>
-        <Table>
-          <TableHeader className="sticky top-0 z-10 bg-background">
-            <TableRow>
-              <TableHead>入金日</TableHead>
-              <TableHead>工事名</TableHead>
-              <TableHead className="text-right">入金額</TableHead>
-              <TableHead>対象月度</TableHead>
-              <TableHead>備考</TableHead>
-              <TableHead />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {(!allReceipts || allReceipts.length === 0) && (
-              <TableRow>
-                <TableCell
-                  className="text-center text-muted-foreground"
-                  colSpan={RECEIPTS_TABLE_COLUMN_COUNT}
-                >
-                  入金実績がありません
-                </TableCell>
-              </TableRow>
-            )}
-            {allReceipts?.map((r) => {
-              const project = r.projectId
-                ? receiptsByProject.get(r.projectId)
-                : undefined;
-              return (
-                <TableRow key={r.id}>
-                  <TableCell>{r.receivedDate || "-"}</TableCell>
-                  <TableCell
-                    className="max-w-40 truncate"
-                    title={project?.name ?? ""}
-                  >
-                    {project?.name ??
-                      (r.projectId ? `案件#${r.projectId}` : "-")}
-                  </TableCell>
-                  <TableCell className="text-right tabular-nums">
-                    {yen(r.amount)}
-                  </TableCell>
-                  <TableCell>{r.month || "-"}</TableCell>
-                  <TableCell title={r.memo ?? ""}>
-                    {r.memo
-                      ? truncateChars(r.memo, NOTES_TRUNCATE_LENGTH)
-                      : "-"}
-                  </TableCell>
-                  <TableCell>
-                    <Button
-                      disabled={deleteReceiptMutation.isPending}
-                      onClick={() => deleteReceiptMutation.mutate({ id: r.id })}
-                      size="icon-sm"
-                      variant="ghost"
-                    >
-                      <Trash2 />
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
-      </ScrollableTableSection>
-
-      <Dialog
-        onOpenChange={(open) => !open && setRegisterProject(null)}
-        open={registerProject !== null}
-      >
-        <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
-            <DialogTitle>入金登録</DialogTitle>
-            {registerProject?.name && (
-              <DialogDescription>{registerProject.name}</DialogDescription>
-            )}
-          </DialogHeader>
-          <div className="flex flex-col gap-5">
-            <div className="grid grid-cols-2 gap-4">
-              <div className="flex flex-col gap-2">
-                <Label>入金日 *</Label>
-                <Input
-                  onChange={(e) =>
-                    setRegisterForm({
-                      ...registerForm,
-                      receivedDate: e.target.value,
-                    })
-                  }
-                  type="date"
-                  value={registerForm.receivedDate}
-                />
-              </div>
-              <div className="flex flex-col gap-2">
-                <Label>対象月度</Label>
-                <MonthPicker
-                  onChange={(v) =>
-                    setRegisterForm({ ...registerForm, month: v })
-                  }
-                  value={registerForm.month}
-                />
-              </div>
-            </div>
-            <div className="flex flex-col gap-2">
-              <Label>入金額 *</Label>
-              <Input
-                onChange={(e) =>
-                  setRegisterForm({ ...registerForm, amount: e.target.value })
-                }
-                type="number"
-                value={registerForm.amount}
-              />
-            </div>
-            <div className="flex flex-col gap-2">
-              <Label>備考</Label>
-              <Textarea
-                onChange={(e) =>
-                  setRegisterForm({ ...registerForm, memo: e.target.value })
-                }
-                value={registerForm.memo}
-              />
-            </div>
-          </div>
-          <DialogFooter>
-            <Button
-              disabled={createReceiptMutation.isPending}
-              onClick={submitRegister}
-            >
-              登録
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
-        onOpenChange={(open) => !open && setHistoryProject(null)}
-        open={historyProject !== null}
-      >
-        <DialogContent className="sm:max-w-xl">
-          <DialogHeader>
-            <DialogTitle>消し込み履歴</DialogTitle>
-            {historyProject?.name && (
-              <DialogDescription>{historyProject.name}</DialogDescription>
-            )}
-          </DialogHeader>
-          {historyReceipts.length > 0 && (
-            <div className="flex items-center justify-between rounded-lg border bg-muted/40 px-4 py-3">
-              <span className="font-medium text-muted-foreground text-xs uppercase tracking-wide">
-                入金済み合計
-              </span>
-              <span className="font-bold text-lg tabular-nums">
-                {yen(
-                  historyReceipts.reduce((sum, r) => sum + (r.amount ?? 0), 0)
-                )}
-              </span>
-            </div>
-          )}
-          <ScrollableTableSection count={historyReceipts.length}>
-            <Table>
-              <TableHeader className="sticky top-0 z-10 bg-background">
-                <TableRow>
-                  <TableHead>入金日</TableHead>
-                  <TableHead>対象月度</TableHead>
-                  <TableHead className="text-right">入金額</TableHead>
-                  <TableHead>備考</TableHead>
-                  <TableHead />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {historyReceipts.length === 0 && (
-                  <TableRow>
-                    <TableCell
-                      className="text-center text-muted-foreground"
-                      colSpan={5}
-                    >
-                      入金履歴がありません
-                    </TableCell>
-                  </TableRow>
-                )}
-                {historyReceipts.map((r) => (
-                  <TableRow key={r.id}>
-                    <TableCell>{r.receivedDate || "-"}</TableCell>
-                    <TableCell>{r.month || "-"}</TableCell>
-                    <TableCell className="text-right tabular-nums">
-                      {yen(r.amount)}
-                    </TableCell>
-                    <TableCell title={r.memo ?? ""}>
-                      {r.memo
-                        ? truncateChars(r.memo, NOTES_TRUNCATE_LENGTH)
-                        : "-"}
-                    </TableCell>
-                    <TableCell>
-                      <Button
-                        disabled={deleteReceiptMutation.isPending}
-                        onClick={() =>
-                          deleteReceiptMutation.mutate({ id: r.id })
-                        }
-                        size="icon-sm"
-                        variant="ghost"
-                      >
-                        <Trash2 />
-                      </Button>
-                    </TableCell>
-                  </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          </ScrollableTableSection>
-        </DialogContent>
-      </Dialog>
+      <LoadMore
+        className="px-1 py-1"
+        hasMore={paged.hasMore}
+        onMore={paged.loadMore}
+        shown={paged.shown}
+        total={paged.total}
+      />
 
       <Dialog
         onOpenChange={(open) => !open && setDetailProject(null)}
@@ -1077,45 +989,14 @@ function ProjectReceiptsTab() {
                   <Wallet className="size-3.5" />
                   入金状況
                 </p>
-                <div className="grid grid-cols-3 gap-3">
-                  <DetailField label="入金額累計">
+                <div className="grid grid-cols-2 gap-3">
+                  <DetailField label="入金額">
                     <span className="font-medium tabular-nums">
-                      {yen(detailProject.cumReceived)}
+                      {yen(detailProject.receivedAmount)}
                     </span>
                   </DetailField>
-                  <DetailField label="当月入金額">
-                    <span className="tabular-nums">
-                      {yen(detailProject.thisMonthReceived)}
-                    </span>
-                  </DetailField>
-                  <DetailField label="前月までの入金額">
-                    <span className="tabular-nums">
-                      {yen(detailProject.prevReceived)}
-                    </span>
-                  </DetailField>
-                </div>
-              </div>
-
-              <div className="flex flex-col gap-3 rounded-lg border p-4">
-                <p className="flex items-center gap-1.5 font-medium text-muted-foreground text-xs">
-                  <Clock className="size-3.5" />
-                  未収・未成状況
-                </p>
-                <div className="grid grid-cols-3 gap-3">
-                  <DetailField label="完成工事未収入金">
-                    <span className="font-medium tabular-nums">
-                      {yen(detailProject.completedReceivable)}
-                    </span>
-                  </DetailField>
-                  <DetailField label="未成工事受入金">
-                    <span className="font-medium tabular-nums">
-                      {yen(detailProject.advanceReceived)}
-                    </span>
-                  </DetailField>
-                  <DetailField label="未完/入金日">
-                    {detailProject.completed
-                      ? detailProject.lastReceiptDate || "完成"
-                      : "未完"}
+                  <DetailField label="入金日">
+                    {detailProject.paidDate || "-"}
                   </DetailField>
                 </div>
               </div>
@@ -1144,7 +1025,7 @@ function ProjectReceiptsTab() {
               </div>
 
               <div className="rounded-md bg-muted/30 p-3 text-muted-foreground text-xs">
-                案件情報は「受注一覧」で管理されます。入金登録は一覧の＋ボタンから行えます。
+                案件情報は「受注一覧」で管理されます。入金は一覧のステータスを入金済に変更して記録します（入金額は契約金額）。
               </div>
             </div>
           )}
@@ -1163,318 +1044,6 @@ function ProjectReceiptsTab() {
           </DialogFooter>
         </DialogContent>
       </Dialog>
-    </div>
-  );
-}
-
-interface MiscFormState {
-  amount: string;
-  category: string;
-  notes: string;
-  payer: string;
-  receiptDate: string;
-  status: string;
-  type: string;
-}
-
-const EMPTY_MISC_FORM: MiscFormState = {
-  category: "",
-  type: "入金",
-  payer: "",
-  amount: "",
-  receiptDate: "",
-  status: "",
-  notes: "",
-};
-
-function toMiscForm(m: MiscRow): MiscFormState {
-  return {
-    category: m.category ?? "",
-    type: m.type ?? "入金",
-    payer: m.payer ?? "",
-    amount: m.amount == null ? "" : String(m.amount),
-    receiptDate: m.receiptDate ?? "",
-    status: m.status ?? "",
-    notes: m.notes ?? "",
-  };
-}
-
-function MiscReceiptsTab() {
-  const utils = api.useUtils();
-  const { data: rows, isLoading } = api.receipts.misc.list.useQuery();
-  const [creating, setCreating] = useState(false);
-  const [editing, setEditing] = useState<MiscRow | null>(null);
-  const [form, setForm] = useState<MiscFormState>(EMPTY_MISC_FORM);
-
-  const createMutation = api.receipts.misc.create.useMutation({
-    onSuccess: async () => {
-      await utils.receipts.misc.list.invalidate();
-      toast.success("入出金を登録しました");
-      setCreating(false);
-    },
-    onError: () => toast.error("登録に失敗しました"),
-  });
-  const updateMutation = api.receipts.misc.update.useMutation({
-    onSuccess: async () => {
-      await utils.receipts.misc.list.invalidate();
-      toast.success("入出金を更新しました");
-      setEditing(null);
-    },
-    onError: () => toast.error("更新に失敗しました"),
-  });
-  const deleteMutation = api.receipts.misc.delete.useMutation({
-    onSuccess: async () => {
-      await utils.receipts.misc.list.invalidate();
-      toast.success("入出金を削除しました");
-      setEditing(null);
-    },
-    onError: () => toast.error("削除に失敗しました"),
-  });
-
-  const openCreate = () => {
-    setForm(EMPTY_MISC_FORM);
-    setCreating(true);
-  };
-  const openEdit = (row: MiscRow) => {
-    setForm(toMiscForm(row));
-    setEditing(row);
-  };
-
-  const validateAmount = () => {
-    const amount = Number(form.amount);
-    if (!(amount > 0)) {
-      toast.error("金額を入力してください");
-      return null;
-    }
-    return amount;
-  };
-
-  const submitCreate = () => {
-    const amount = validateAmount();
-    if (amount === null) {
-      return;
-    }
-    createMutation.mutate({ ...form, amount });
-  };
-  const submitUpdate = () => {
-    if (!editing) {
-      return;
-    }
-    const amount = validateAmount();
-    if (amount === null) {
-      return;
-    }
-    updateMutation.mutate({ id: editing.id, ...form, amount });
-  };
-
-  return (
-    <div className="flex flex-col gap-4 pt-4">
-      <div className="flex justify-end">
-        <Button onClick={openCreate}>
-          <Plus data-icon="inline-start" />
-          新規登録
-        </Button>
-      </div>
-
-      <ScrollableTableSection count={rows?.length ?? 0}>
-        <Table>
-          <TableHeader className="sticky top-0 z-10 bg-background">
-            <TableRow>
-              <TableHead>#</TableHead>
-              <TableHead>種別</TableHead>
-              <TableHead>区分</TableHead>
-              <TableHead>入金元</TableHead>
-              <TableHead className="text-right">金額</TableHead>
-              <TableHead>入金日</TableHead>
-              <TableHead>ステータス</TableHead>
-              <TableHead>備考</TableHead>
-              <TableHead />
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {isLoading &&
-              Array.from({ length: 5 }, (_, i) => (
-                <TableRow key={`skeleton-${i.toString()}`}>
-                  <TableCell colSpan={MISC_TABLE_COLUMN_COUNT}>
-                    <Skeleton className="h-6 w-full" />
-                  </TableCell>
-                </TableRow>
-              ))}
-            {!isLoading && (!rows || rows.length === 0) && (
-              <TableRow>
-                <TableCell
-                  className="text-center text-muted-foreground"
-                  colSpan={MISC_TABLE_COLUMN_COUNT}
-                >
-                  案件外の入出金は登録されていません
-                </TableCell>
-              </TableRow>
-            )}
-            {(rows ?? []).map((m) => (
-              <TableRow
-                className="cursor-pointer"
-                key={m.id}
-                onClick={() => openEdit(m)}
-              >
-                <TableCell className="tabular-nums">#{m.id}</TableCell>
-                <TableCell>
-                  <Badge
-                    variant={m.type === "返金" ? "destructive" : "default"}
-                  >
-                    {m.type || "-"}
-                  </Badge>
-                </TableCell>
-                <TableCell
-                  className="max-w-24 truncate"
-                  title={m.category ?? ""}
-                >
-                  {m.category || "-"}
-                </TableCell>
-                <TableCell className="max-w-28 truncate" title={m.payer ?? ""}>
-                  {m.payer || "-"}
-                </TableCell>
-                <TableCell className="text-right tabular-nums">
-                  {yen(m.amount)}
-                </TableCell>
-                <TableCell>{m.receiptDate || "-"}</TableCell>
-                <TableCell>{m.status || "-"}</TableCell>
-                <TableCell title={m.notes ?? ""}>
-                  {m.notes
-                    ? truncateChars(m.notes, NOTES_TRUNCATE_LENGTH)
-                    : "-"}
-                </TableCell>
-                <TableCell>
-                  <Button
-                    disabled={deleteMutation.isPending}
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      deleteMutation.mutate({ id: m.id });
-                    }}
-                    size="icon-sm"
-                    variant="ghost"
-                  >
-                    <Trash2 />
-                  </Button>
-                </TableCell>
-              </TableRow>
-            ))}
-          </TableBody>
-        </Table>
-      </ScrollableTableSection>
-
-      <Dialog onOpenChange={setCreating} open={creating}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>新規登録</DialogTitle>
-          </DialogHeader>
-          <MiscReceiptForm form={form} setForm={setForm} />
-          <DialogFooter>
-            <Button disabled={createMutation.isPending} onClick={submitCreate}>
-              登録
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-
-      <Dialog
-        onOpenChange={(open) => !open && setEditing(null)}
-        open={editing !== null}
-      >
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>入出金を編集</DialogTitle>
-          </DialogHeader>
-          <MiscReceiptForm form={form} setForm={setForm} />
-          <DialogFooter className="justify-between sm:justify-between">
-            <Button
-              disabled={deleteMutation.isPending}
-              onClick={() =>
-                editing && deleteMutation.mutate({ id: editing.id })
-              }
-              variant="destructive"
-            >
-              削除
-            </Button>
-            <Button disabled={updateMutation.isPending} onClick={submitUpdate}>
-              保存
-            </Button>
-          </DialogFooter>
-        </DialogContent>
-      </Dialog>
-    </div>
-  );
-}
-
-function MiscReceiptForm({
-  form,
-  setForm,
-}: {
-  form: MiscFormState;
-  setForm: (f: MiscFormState) => void;
-}) {
-  const set = <K extends keyof MiscFormState>(
-    key: K,
-    value: MiscFormState[K]
-  ) => setForm({ ...form, [key]: value });
-
-  return (
-    <div className="grid grid-cols-2 gap-4">
-      <div className="flex flex-col gap-2">
-        <Label>種別</Label>
-        <Select onValueChange={(v) => set("type", v)} value={form.type}>
-          <SelectTrigger className="w-full">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="入金">入金</SelectItem>
-            <SelectItem value="返金">返金</SelectItem>
-          </SelectContent>
-        </Select>
-      </div>
-      <div className="flex flex-col gap-2">
-        <Label>区分</Label>
-        <Input
-          onChange={(e) => set("category", e.target.value)}
-          value={form.category}
-        />
-      </div>
-      <div className="flex flex-col gap-2">
-        <Label>入金元</Label>
-        <Input
-          onChange={(e) => set("payer", e.target.value)}
-          value={form.payer}
-        />
-      </div>
-      <div className="flex flex-col gap-2">
-        <Label>金額 *</Label>
-        <Input
-          onChange={(e) => set("amount", e.target.value)}
-          type="number"
-          value={form.amount}
-        />
-      </div>
-      <div className="flex flex-col gap-2">
-        <Label>入金日</Label>
-        <Input
-          onChange={(e) => set("receiptDate", e.target.value)}
-          type="date"
-          value={form.receiptDate}
-        />
-      </div>
-      <div className="flex flex-col gap-2">
-        <Label>ステータス</Label>
-        <Input
-          onChange={(e) => set("status", e.target.value)}
-          value={form.status}
-        />
-      </div>
-      <div className="col-span-2 flex flex-col gap-2">
-        <Label>備考</Label>
-        <Textarea
-          onChange={(e) => set("notes", e.target.value)}
-          value={form.notes}
-        />
-      </div>
     </div>
   );
 }

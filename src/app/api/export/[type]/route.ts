@@ -1,8 +1,12 @@
-import { asc, desc, eq, isNull, sql } from "drizzle-orm";
+import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { type NextRequest, NextResponse } from "next/server";
+import { actualReceivedAmount } from "~/lib/actual-received";
+import { jstDateString } from "~/lib/paid-at";
+import { SUPERSEDED_STATUS } from "~/lib/superseded";
 import { resolveAuthedUser } from "~/server/auth/session";
+import { escapeCsvValue } from "~/server/csv/csv-escape";
 import { db } from "~/server/db";
-import { projects, receipts } from "~/server/db/schema";
+import { orders, projects } from "~/server/db/schema";
 
 export const runtime = "nodejs";
 
@@ -11,25 +15,8 @@ interface CsvHeader {
   label: string;
 }
 
-const CSV_NEEDS_QUOTING_RE = /[",\n]/;
-const CSV_QUOTE_RE = /"/g;
-const YM_FULL_DATE_RE = /(\d{4})[-/年.\s]*(\d{1,2})/;
-const YM_MONTH_ONLY_RE = /^\s*(\d{1,2})\s*月?\s*$/;
-const YM_YEAR_RE = /(\d{4})/;
-const YM_ISO_DATE_RE = /^(\d{4})-(\d{2})/;
-
-// 旧app server.js の toCSV() を移植。カンマ/ダブルクォート/改行を含む値のみクォートし、
-// Excelでの文字化けを避けるためBOMを先頭に付与する。
-function escapeCsvValue(v: unknown): string {
-  if (v === null || v === undefined) {
-    return "";
-  }
-  const s = String(v);
-  return CSV_NEEDS_QUOTING_RE.test(s)
-    ? `"${s.replace(CSV_QUOTE_RE, '""')}"`
-    : s;
-}
-
+// 旧app server.js の toCsv() を移植。カンマ/ダブルクォート/改行を含む値のみクォートし、
+// Excelでの文字化けを避けるためBOMを先頭に付与する。先頭が0の数字列などはExcelで桁が落ちない形にする。
 function toCsv(rows: Record<string, unknown>[], headers: CsvHeader[]): string {
   const head = headers.map((h) => escapeCsvValue(h.label)).join(",");
   const body = rows
@@ -38,31 +25,7 @@ function toCsv(rows: Record<string, unknown>[], headers: CsvHeader[]): string {
   return `﻿${head}\n${body}`;
 }
 
-// 旧app server.js の toYM() を移植。対象月度を「YYYY/MM」の年月形式に正規化
-// （「6月」等の表記や入金日から補完）。
-function toYM(v: unknown, dateStr: unknown): string {
-  if (v) {
-    const s = String(v);
-    let m = s.match(YM_FULL_DATE_RE);
-    if (m?.[1] && m[2]) {
-      return `${m[1]}/${m[2].padStart(2, "0")}`;
-    }
-    m = s.match(YM_MONTH_ONLY_RE);
-    if (m?.[1] && dateStr) {
-      const y = (String(dateStr).match(YM_YEAR_RE) ?? [])[1];
-      if (y) {
-        return `${y}/${m[1].padStart(2, "0")}`;
-      }
-    }
-  }
-  const d = String(dateStr ?? "").match(YM_ISO_DATE_RE);
-  if (d) {
-    return `${d[1]}/${d[2]}`;
-  }
-  return (v as string | undefined) ?? "";
-}
-
-const EXPORT_TYPES = ["sales", "receipts"] as const;
+const EXPORT_TYPES = ["sales", "plan", "payments"] as const;
 type ExportType = (typeof EXPORT_TYPES)[number];
 
 function isExportType(value: string): value is ExportType {
@@ -70,78 +33,119 @@ function isExportType(value: string): value is ExportType {
 }
 
 async function buildSalesCsv(): Promise<string> {
-  // 案件数に比例したループ内SELECT（N+1）を避けるため、入金合計は一括GROUP BYで取得する
-  const [projectRows, receiptSums] = await Promise.all([
-    db
-      .select()
-      .from(projects)
-      .where(isNull(projects.deletedAt))
-      .orderBy(asc(projects.id)),
-    db
-      .select({
-        projectId: receipts.projectId,
-        total: sql<string>`coalesce(sum(${receipts.amount}), 0)`,
-      })
-      .from(receipts)
-      .groupBy(receipts.projectId),
-  ]);
+  // 入金額は手入力せず、入金ステータス（projects.status）から導出する（入金済 → 契約金額、それ以外 → 0）
+  const projectRows = await db
+    .select()
+    .from(projects)
+    // オーダー移行（コピー元）案件は、コピー先と二重計上になるため除く
+    .where(
+      and(
+        isNull(projects.deletedAt),
+        sql`${projects.status} is distinct from ${SUPERSEDED_STATUS}`
+      )
+    )
+    .orderBy(asc(projects.id));
 
-  const receiptSumByProject = new Map<number, number>(
-    receiptSums
-      .filter((r) => r.projectId !== null)
-      .map((r) => [r.projectId as number, Number(r.total) || 0])
-  );
-
-  const rows = projectRows.map((p) => {
-    const received = receiptSumByProject.get(p.id) ?? 0;
-    return {
-      project_no: p.projectNo,
-      name: p.name,
-      client: p.client,
-      contract: p.amount,
-      received,
-      outstanding: (Number(p.amount) || 0) - received,
-      status: p.status,
-    };
-  });
+  const rows = projectRows.map((p) => ({
+    project_no: p.projectNo,
+    name: p.name,
+    client: p.client,
+    contract: p.amount,
+    received: actualReceivedAmount(p),
+    paid_date: jstDateString(p.paidAt),
+    status: p.status,
+  }));
 
   return toCsv(rows, [
     { key: "project_no", label: "案件ID" },
     { key: "name", label: "工事名" },
     { key: "client", label: "顧客" },
     { key: "contract", label: "請負金額" },
-    { key: "received", label: "入金累計" },
-    { key: "outstanding", label: "未収金" },
+    { key: "received", label: "入金額" },
+    { key: "paid_date", label: "入金日" },
     { key: "status", label: "ステータス" },
   ]);
 }
 
-async function buildReceiptsCsv(): Promise<string> {
+/** 発注（工事計画）と案件を結合して返す。削除済み案件の発注は除く。projectId 指定でその案件だけ。 */
+async function loadOrderRows(projectId: number | null) {
   const rows = await db
-    .select({
-      received_date: receipts.receivedDate,
-      project_no: projects.projectNo,
-      project_name: projects.name,
-      amount: receipts.amount,
-      month: receipts.month,
-      memo: receipts.memo,
+    .select({ order: orders, project: projects })
+    .from(orders)
+    .innerJoin(projects, eq(orders.projectId, projects.id))
+    .where(
+      and(
+        isNull(projects.deletedAt),
+        sql`${projects.status} is distinct from ${SUPERSEDED_STATUS}`
+      )
+    )
+    .orderBy(asc(projects.id), asc(orders.id));
+  return projectId ? rows.filter((r) => r.project.id === projectId) : rows;
+}
+
+async function buildPlanCsv(projectId: number | null): Promise<string> {
+  const rows = (await loadOrderRows(projectId)).map(
+    ({ order: o, project: p }) => ({
+      project_no: p.projectNo,
+      name: p.name,
+      client: p.client,
+      category: o.category,
+      vendor: o.vendor,
+      estimate: o.estimate,
+      planned: o.planned,
+      decided: o.decided,
+      status: o.status,
+      start: o.periodStart,
+      end: o.periodEnd,
+      assignee: o.assignee,
+      order_no: o.orderNo,
     })
-    .from(receipts)
-    .leftJoin(projects, eq(receipts.projectId, projects.id))
-    .orderBy(desc(receipts.receivedDate));
-
-  const csvRows = rows.map((r) => ({
-    ...r,
-    month: toYM(r.month, r.received_date),
-  }));
-
-  return toCsv(csvRows, [
-    { key: "received_date", label: "入金日" },
+  );
+  return toCsv(rows, [
     { key: "project_no", label: "案件ID" },
-    { key: "project_name", label: "工事名" },
-    { key: "amount", label: "入金額" },
-    { key: "month", label: "対象月度" },
-    { key: "memo", label: "備考" },
+    { key: "name", label: "工事名" },
+    { key: "client", label: "顧客" },
+    { key: "category", label: "工種" },
+    { key: "vendor", label: "発注先" },
+    { key: "estimate", label: "見積金額" },
+    { key: "planned", label: "予定金額" },
+    { key: "decided", label: "決定金額" },
+    { key: "status", label: "発注ステータス" },
+    { key: "start", label: "着手予定" },
+    { key: "end", label: "完成予定" },
+    { key: "assignee", label: "担当者" },
+    { key: "order_no", label: "発注番号" },
+  ]);
+}
+
+async function buildPaymentsCsv(): Promise<string> {
+  const rows = (await loadOrderRows(null)).map(({ order: o, project: p }) => ({
+    payment_no: o.paymentNo,
+    project_no: p.projectNo,
+    name: p.name,
+    category: o.category,
+    vendor: o.vendor,
+    decided: o.decided,
+    fee: o.transferFee,
+    terms: o.payment,
+    due: o.paymentDate,
+    status: o.paymentStatus,
+    paid_on: o.paidOn,
+    notes: o.paymentNotes,
+  }));
+  return toCsv(rows, [
+    { key: "payment_no", label: "支払番号" },
+    { key: "project_no", label: "案件ID" },
+    { key: "name", label: "工事名" },
+    { key: "category", label: "工種" },
+    { key: "vendor", label: "発注先" },
+    { key: "decided", label: "支払金額" },
+    { key: "fee", label: "振込手数料" },
+    { key: "terms", label: "支払条件" },
+    { key: "due", label: "支払予定日" },
+    { key: "status", label: "支払ステータス" },
+    { key: "paid_on", label: "支払日" },
+    { key: "notes", label: "備考" },
   ]);
 }
 
@@ -162,20 +166,22 @@ export async function GET(
     );
   }
 
-  let csv: string;
-  let filename: string;
-  if (type === "sales") {
-    csv = await buildSalesCsv();
-    filename = "sales.csv";
-  } else {
-    csv = await buildReceiptsCsv();
-    filename = "receipts.csv";
-  }
+  const projectIdParam = Number(req.nextUrl.searchParams.get("projectId"));
+  const projectId =
+    Number.isInteger(projectIdParam) && projectIdParam > 0
+      ? projectIdParam
+      : null;
+  const builders: Record<ExportType, () => Promise<string>> = {
+    sales: buildSalesCsv,
+    plan: () => buildPlanCsv(projectId),
+    payments: buildPaymentsCsv,
+  };
+  const csv = await builders[type]();
 
   return new NextResponse(csv, {
     headers: {
       "Content-Type": "text/csv; charset=utf-8",
-      "Content-Disposition": `attachment; filename="${filename}"`,
+      "Content-Disposition": `attachment; filename="${type}.csv"`,
     },
   });
 }

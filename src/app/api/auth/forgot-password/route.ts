@@ -49,7 +49,7 @@ export async function POST(req: NextRequest) {
           subject: "【株式会社WIN WIN】パスワード再設定のご案内",
           text: `${user.name || "ご担当者"} 様
 
-業務管理システムのパスワード再設定のリクエストを受け付けました。
+物件管理システムのパスワード再設定のリクエストを受け付けました。
 下記URLより新しいパスワードをご設定ください。
 
 ${resetUrl}

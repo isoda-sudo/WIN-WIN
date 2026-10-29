@@ -4,7 +4,11 @@ import { Plus } from "lucide-react";
 import Link from "next/link";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
-import { ContactListEditor } from "~/components/shared/contact-list-editor";
+import {
+  ContactListEditor,
+  cleanContacts,
+} from "~/components/shared/contact-list-editor";
+import { LoadMore } from "~/components/shared/load-more";
 import { ScrollableTableSection } from "~/components/shared/scrollable-table";
 import { useZipCodeLookup } from "~/components/shared/use-zip-lookup";
 import { Button } from "~/components/ui/button";
@@ -28,9 +32,30 @@ import {
 } from "~/components/ui/table";
 import { Textarea } from "~/components/ui/textarea";
 import { type EmailContact, toContactList } from "~/lib/contacts";
+import { compareAsc, compareDesc, type SortOption } from "~/lib/list-sort";
+import { useSortedPagedList } from "~/lib/use-sorted-paged-list";
 import { api, type RouterOutputs } from "~/trpc/react";
 
 type Customer = RouterOutputs["customers"]["list"][number];
+
+const SORT_OPTIONS: SortOption<Customer>[] = [
+  {
+    compare: (a, b) => compareAsc(a.id, b.id),
+    label: "ID昇順",
+    value: "id-asc",
+  },
+  {
+    compare: (a, b) => compareDesc(a.id, b.id),
+    label: "登録降順",
+    value: "id-desc",
+  },
+  {
+    compare: (a, b) =>
+      compareAsc(a.company, b.company) || compareDesc(a.id, b.id),
+    label: "名称順",
+    value: "name-asc",
+  },
+];
 
 interface FormState {
   address: string;
@@ -87,7 +112,12 @@ function toFormState(c: Customer): FormState {
 
 export default function CustomersPage() {
   const utils = api.useUtils();
-  const { data: customers, isLoading } = api.customers.list.useQuery();
+  const {
+    data: customers,
+    isLoading,
+    isError,
+    refetch,
+  } = api.customers.list.useQuery();
   const { data: me } = api.users.me.useQuery();
   const canEdit = me?.role === "admin";
   const [keyword, setKeyword] = useState("");
@@ -95,8 +125,30 @@ export default function CustomersPage() {
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
 
+  const filtered = useMemo(() => {
+    if (!customers) {
+      return [];
+    }
+    const kw = keyword.trim().toLowerCase();
+    if (!kw) {
+      return customers;
+    }
+    return customers.filter(
+      (c) =>
+        c.company.toLowerCase().includes(kw) ||
+        (c.contact ?? "").toLowerCase().includes(kw)
+    );
+  }, [customers, keyword]);
+
+  const paged = useSortedPagedList({
+    options: SORT_OPTIONS,
+    resetKey: keyword,
+    rows: filtered,
+  });
+
   const createMutation = api.customers.create.useMutation({
     onSuccess: async () => {
+      paged.setSortKey(SORT_OPTIONS[0]?.value ?? "");
       await utils.customers.list.invalidate();
       toast.success("顧客を登録しました");
       setCreating(false);
@@ -120,21 +172,6 @@ export default function CustomersPage() {
     onError: () => toast.error("削除に失敗しました"),
   });
 
-  const filtered = useMemo(() => {
-    if (!customers) {
-      return [];
-    }
-    const kw = keyword.trim().toLowerCase();
-    if (!kw) {
-      return customers;
-    }
-    return customers.filter(
-      (c) =>
-        c.company.toLowerCase().includes(kw) ||
-        (c.contact ?? "").toLowerCase().includes(kw)
-    );
-  }, [customers, keyword]);
-
   const openEdit = (c: Customer) => {
     if (!canEdit) {
       return;
@@ -150,45 +187,60 @@ export default function CustomersPage() {
     setCreating(true);
   };
 
+  const buildPayload = () => {
+    const to = cleanContacts(form.toContacts, "TO担当者");
+    const cc = cleanContacts(form.ccContacts, "CC関係者");
+    const error = to.error ?? cc.error;
+    if (error) {
+      toast.error(error);
+      return null;
+    }
+    return {
+      ...form,
+      toContacts: to.contacts,
+      ccContacts: cc.contacts,
+      capital: form.capital ? Number(form.capital) : null,
+    };
+  };
   const submitCreate = () => {
     if (!(form.company.trim() && form.contact.trim() && form.email.trim())) {
       toast.error("必須項目を入力してください");
       return;
     }
-    createMutation.mutate({
-      ...form,
-      capital: form.capital ? Number(form.capital) : null,
-    });
+    const payload = buildPayload();
+    if (payload) {
+      createMutation.mutate(payload);
+    }
   };
   const submitUpdate = () => {
     if (!editing) {
       return;
     }
-    updateMutation.mutate({
-      id: editing.id,
-      ...form,
-      capital: form.capital ? Number(form.capital) : null,
-    });
+    const payload = buildPayload();
+    if (payload) {
+      updateMutation.mutate({ id: editing.id, ...payload });
+    }
   };
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3">
         <div>
           <h1 className="font-bold text-2xl">顧客マスタ</h1>
           <p className="text-muted-foreground text-sm">
             案件の相手方となる顧客企業を管理します
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-nowrap items-end gap-2">
           <Input
-            className="w-56"
+            className="h-8 min-w-32 flex-1"
             onChange={(e) => setKeyword(e.target.value)}
             placeholder="企業名・担当者名で検索"
             value={keyword}
           />
+
           {canEdit && (
-            <Button onClick={openCreate}>
+            <Button className="h-8 shrink-0" onClick={openCreate}>
               <Plus data-icon="inline-start" />
               新規顧客登録
             </Button>
@@ -197,7 +249,7 @@ export default function CustomersPage() {
       </div>
 
       <ScrollableTableSection count={filtered.length}>
-        <Table>
+        <Table className="text-xs [&_td]:px-1 [&_th]:px-1">
           <TableHeader className="sticky top-0 z-10 bg-background">
             <TableRow>
               <TableHead>#</TableHead>
@@ -221,7 +273,27 @@ export default function CustomersPage() {
                   </TableCell>
                 </TableRow>
               ))}
-            {!isLoading && filtered.length === 0 && (
+            {isError && (
+              <TableRow>
+                <TableCell
+                  className="text-center text-muted-foreground"
+                  colSpan={10}
+                >
+                  <div className="flex flex-col items-center gap-2 py-2">
+                    <span>顧客一覧の取得に失敗しました</span>
+                    <Button
+                      onClick={() => refetch()}
+                      size="sm"
+                      type="button"
+                      variant="outline"
+                    >
+                      再試行
+                    </Button>
+                  </div>
+                </TableCell>
+              </TableRow>
+            )}
+            {!(isLoading || isError) && filtered.length === 0 && (
               <TableRow>
                 <TableCell
                   className="text-center text-muted-foreground"
@@ -231,7 +303,7 @@ export default function CustomersPage() {
                 </TableCell>
               </TableRow>
             )}
-            {filtered.map((c) => (
+            {paged.rows.map((c) => (
               <TableRow
                 className={canEdit ? "cursor-pointer" : undefined}
                 key={c.id}
@@ -270,6 +342,13 @@ export default function CustomersPage() {
           </TableBody>
         </Table>
       </ScrollableTableSection>
+      <LoadMore
+        className="px-1 py-1"
+        hasMore={paged.hasMore}
+        onMore={paged.loadMore}
+        shown={paged.shown}
+        total={paged.total}
+      />
 
       <Dialog onOpenChange={setCreating} open={creating}>
         <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-2xl">

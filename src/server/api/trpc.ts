@@ -9,7 +9,16 @@
 import { initTRPC, TRPCError } from "@trpc/server";
 import superjson from "superjson";
 import { ZodError } from "zod";
+import {
+  ACCOUNTING_ROLES,
+  FINANCIAL_READ_ROLES,
+  MASTER_READ_ROLES,
+  READ_ONLY_ROLES,
+  REPORTING_ROLES,
+} from "~/lib/roles";
 import { resolveAuthedUser } from "~/server/auth/session";
+import { resetDbPool } from "~/server/db";
+import { assertEditLockNotHeldByOther } from "~/server/edit-lock/guard";
 
 export type { AuthedUser } from "~/server/auth/session";
 
@@ -85,7 +94,11 @@ export const createTRPCRouter = t.router;
 const DEV_DELAY_MAX_MS = 400;
 const DEV_DELAY_MIN_MS = 100;
 
-const timingMiddleware = t.middleware(async ({ next }) => {
+/** 1つの処理がこの時間（ミリ秒）を超えたら、DB接続が固まったとみなして接続を作り直す。 */
+const PROCEDURE_WATCHDOG_MS = 12_000;
+
+const timingMiddleware = t.middleware(async ({ ctx, next, path, type }) => {
+  await enforceEditLock({ ctx, path, type });
   if (t._config.isDev) {
     // artificial delay in dev
     const waitMs =
@@ -93,10 +106,59 @@ const timingMiddleware = t.middleware(async ({ next }) => {
     await new Promise((resolve) => setTimeout(resolve, waitMs));
   }
 
-  const result = await next();
-
-  return result;
+  // 一覧などが固まって300秒も待たされないよう、一定時間で打ち切って接続を作り直す。
+  // クライアントは自動で再取得し、新しい接続で復帰する。
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const watchdog = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      resetDbPool().finally(() =>
+        reject(
+          new TRPCError({
+            code: "TIMEOUT",
+            message:
+              "データベースの応答が遅れています。しばらくして、もう一度読み込んでください。",
+          })
+        )
+      );
+    }, PROCEDURE_WATCHDOG_MS);
+  });
+  try {
+    return await Promise.race([next(), watchdog]);
+  } finally {
+    clearTimeout(timer);
+  }
 });
+
+/** 排他制御の対象外の更新系処理（編集ではない操作）。 */
+const EDIT_LOCK_EXEMPT_PREFIXES = ["editLocks.", "dashboard."];
+
+/**
+ * 排他制御の強制。排他制御のある画面（ヘッダ x-edit-scope）からの更新系は、別の人（または同じ人の別のタブ）が
+ * その画面を編集中なら拒否する。画面側の無効化（閲覧のみ表示）に頼らず、モーダルや一覧外の操作も含めて止める。
+ * すべての手続きが通る timingMiddleware から呼ぶ（手続きごとの基底が別々のため）。
+ */
+async function enforceEditLock(opts: {
+  ctx: { headers: Headers; user: { id: number } | null };
+  path: string;
+  type: string;
+}): Promise<void> {
+  const { ctx, path, type } = opts;
+  if (
+    type !== "mutation" ||
+    !ctx.user ||
+    EDIT_LOCK_EXEMPT_PREFIXES.some((p) => path.startsWith(p))
+  ) {
+    return;
+  }
+  const scope = ctx.headers.get("x-edit-scope");
+  if (scope) {
+    await assertEditLockNotHeldByOther({
+      clientId: ctx.headers.get("x-edit-client"),
+      scope,
+      userId: ctx.user.id,
+    });
+  }
+}
 
 /**
  * Public (unauthenticated) procedure
@@ -129,7 +191,7 @@ export const protectedProcedure = t.procedure
  * request in `createTRPCContext`, not trusted from the JWT), matching the old
  * app's "role changes take effect immediately" design.
  */
-function requireRole(allowedRoles: string[]) {
+function requireRole(allowedRoles: readonly string[]) {
   return t.middleware(({ ctx, next }) => {
     if (!ctx.user) {
       throw new TRPCError({ code: "UNAUTHORIZED" });
@@ -152,7 +214,17 @@ export const adminProcedure = t.procedure
 export const accountingOrAdminProcedure = t.procedure
   .use(timingMiddleware)
   .use(isAuthed)
-  .use(requireRole(["admin", "accounting"]));
+  .use(requireRole(ACCOUNTING_ROLES));
+
+/**
+ * 売上管理表・支払い予定表の「読み取り」用。管理者・経理に加え、閲覧専用の
+ * 税理士・社労士（tax_advisor）も呼べる。書き込みには絶対に使わない
+ * （書き込みは accountingOrAdminProcedure のまま）。
+ */
+export const financialReadProcedure = t.procedure
+  .use(timingMiddleware)
+  .use(isAuthed)
+  .use(requireRole(FINANCIAL_READ_ROLES));
 
 export const staffOrAdminProcedure = t.procedure
   .use(timingMiddleware)
@@ -172,23 +244,25 @@ export const adminOrViewerProcedure = t.procedure
 export const reportingProcedure = t.procedure
   .use(timingMiddleware)
   .use(isAuthed)
-  .use(requireRole(["admin", "accounting", "staff", "viewer"]));
+  .use(requireRole(REPORTING_ROLES));
 
 /**
- * Read access for master data (customers/vendors) — same role set as
- * `reportingProcedure` (admin/accounting/staff/viewer), aliased for
- * readability at call sites. Writes to these masters are admin-only
- * (`adminProcedure`), unlike reads.
+ * Read access for master data (customers/vendors/categories): admin/accounting/
+ * staff/viewer. 税理士・社労士（tax_advisor）は含まない（マスタ・顧客個人情報は
+ * 閲覧不可）。Writes to these masters are admin-only (`adminProcedure`).
  */
-export const masterReadableProcedure = reportingProcedure;
+export const masterReadableProcedure = t.procedure
+  .use(timingMiddleware)
+  .use(isAuthed)
+  .use(requireRole(MASTER_READ_ROLES));
 
 /**
- * Blocks the read-only "viewer" role from write mutations while allowing
+ * Blocks the read-only roles (viewer, tax_advisor) from write mutations while allowing
  * every other authenticated role through (mirrors `protectedProcedure` minus
  * viewer). Used for `projects`/`orders` mutations that were previously wide
  * open to any authenticated user.
  */
-function requireNotRole(blockedRoles: string[]) {
+function requireNotRole(blockedRoles: readonly string[]) {
   return t.middleware(({ ctx, next }) => {
     if (!ctx.user) {
       throw new TRPCError({ code: "UNAUTHORIZED" });
@@ -206,4 +280,4 @@ function requireNotRole(blockedRoles: string[]) {
 export const notViewerProcedure = t.procedure
   .use(timingMiddleware)
   .use(isAuthed)
-  .use(requireNotRole(["viewer"]));
+  .use(requireNotRole(READ_ONLY_ROLES));

@@ -3,40 +3,28 @@
 import { Moon, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
+import { Button } from "~/components/ui/button";
 
+/** ライト／ダークの切り替え（ヘッダー用のアイコンボタン）。 */
 export function ThemeToggle() {
-  const { theme, setTheme } = useTheme();
+  const { resolvedTheme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
 
-  // Avoid hydration mismatch
+  // サーバー描画との不一致を避けるため、マウント後にアイコンを決める
   useEffect(() => {
     setMounted(true);
   }, []);
 
-  if (!mounted) {
-    return (
-      <button
-        aria-label="Toggle theme"
-        className="inline-flex size-9 items-center justify-center rounded-md border border-input bg-background font-medium text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
-        type="button"
-      >
-        <Sun className="size-4" />
-      </button>
-    );
-  }
-
+  const dark = mounted && resolvedTheme === "dark";
   return (
-    <button
-      aria-label="Toggle theme"
-      className="inline-flex size-9 items-center justify-center rounded-md border border-input bg-background font-medium text-sm transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:pointer-events-none disabled:opacity-50"
-      onClick={() => setTheme(theme === "dark" ? "light" : "dark")}
-      type="button"
+    <Button
+      aria-label={dark ? "ライトモードにする" : "ダークモードにする"}
+      onClick={() => setTheme(dark ? "light" : "dark")}
+      size="icon"
+      title={dark ? "ライトモードにする" : "ダークモードにする"}
+      variant="ghost"
     >
-      {theme === "dark" ? (
-        <Sun className="size-4" />
-      ) : (
-        <Moon className="size-4" />
-      )}
-    </button>
+      {dark ? <Sun className="size-4" /> : <Moon className="size-4" />}
+    </Button>
   );
 }

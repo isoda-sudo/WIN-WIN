@@ -1,5 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import { type NextRequest, NextResponse } from "next/server";
+import { orderFileContentDisposition } from "~/lib/file-naming";
 import { resolveAuthedUser } from "~/server/auth/session";
 import { db } from "~/server/db";
 import { orderFiles } from "~/server/db/schema";
@@ -34,7 +35,12 @@ export async function GET(
   return new NextResponse(new Uint8Array(buf), {
     headers: {
       "Content-Type": "application/pdf",
-      "Content-Disposition": `inline; filename="${doc.filename || `${kind}.pdf`}"`,
+      "Content-Disposition": orderFileContentDisposition(
+        doc.filename || `${kind}.pdf`,
+        req.nextUrl.searchParams.get("download") === "1"
+          ? "attachment"
+          : "inline"
+      ),
     },
   });
 }

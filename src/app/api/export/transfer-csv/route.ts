@@ -2,6 +2,7 @@ import { inArray } from "drizzle-orm";
 import iconv from "iconv-lite";
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
+import { denyUnlessBankAccess } from "~/server/auth/route-guard";
 import { resolveAuthedUser } from "~/server/auth/session";
 import { buildZenginTransferCsv } from "~/server/csv/zengin-transfer";
 import { db } from "~/server/db";
@@ -10,8 +11,15 @@ import { vendors } from "~/server/db/schema";
 export const runtime = "nodejs";
 
 const bodySchema = z.object({
-  items: z.array(z.object({ vendor: z.string(), amount: z.number() })),
+  items: z.array(
+    z.object({
+      vendor: z.string(),
+      amount: z.number().int().nonnegative().max(1_000_000_000_000),
+    })
+  ),
   transferDate: z.string().nullish(),
+  // true のとき、Excelで開いても先頭の0（口座番号など）が落ちない形で出力する（銀行取込には使わない）
+  excelSafe: z.boolean().optional(),
 });
 
 function filenameDate(d: Date): string {
@@ -31,6 +39,10 @@ export async function POST(req: NextRequest) {
   const user = await resolveAuthedUser(req.headers);
   if (!user) {
     return NextResponse.json({ error: "認証が必要です" }, { status: 401 });
+  }
+  const denied = denyUnlessBankAccess(user);
+  if (denied) {
+    return denied;
   }
 
   const body = await req.json().catch(() => null);
@@ -71,13 +83,20 @@ export async function POST(req: NextRequest) {
   const transferDate = parsed.data.transferDate
     ? new Date(parsed.data.transferDate)
     : new Date();
-  const csv = buildZenginTransferCsv(items, transferDate);
+  const csv = buildZenginTransferCsv(
+    items,
+    transferDate,
+    {},
+    {
+      excelSafe: parsed.data.excelSafe === true,
+    }
+  );
   const encoded = iconv.encode(csv, "Shift_JIS");
 
   return new NextResponse(new Uint8Array(encoded), {
     headers: {
       "Content-Type": "text/csv; charset=Shift_JIS",
-      "Content-Disposition": `attachment; filename="sougouhurikomi_${filenameDate(transferDate)}.csv"`,
+      "Content-Disposition": `attachment; filename="sougouhurikomi_${filenameDate(transferDate)}${parsed.data.excelSafe ? "_excel" : ""}.csv"`,
     },
   });
 }

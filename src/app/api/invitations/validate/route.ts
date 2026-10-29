@@ -1,15 +1,12 @@
 import { eq } from "drizzle-orm";
 import { type NextRequest, NextResponse } from "next/server";
+import { ROLE_LABELS } from "~/lib/roles";
 import { db } from "~/server/db";
 import { invitations } from "~/server/db/schema";
 
 export const runtime = "nodejs";
 
-const INVITE_ROLE_LABELS: Record<string, string> = {
-  admin: "管理者",
-  accounting: "経理部",
-  staff: "一般社員",
-};
+const INVITE_ROLE_LABELS: Record<string, string> = ROLE_LABELS;
 
 /** 招待トークン検証（accept-invite ページから／認証不要） */
 export async function GET(req: NextRequest) {

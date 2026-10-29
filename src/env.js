@@ -16,6 +16,20 @@ export const env = createEnv({
     SMTP_USER: z.string().optional(),
     SMTP_PASS: z.string().optional(),
     MAIL_FROM: z.string().optional(),
+    // 2FA stays off until this 32-byte hex key is set (encrypts TOTP secrets, peppers recovery codes)
+    // 定期実行（Vercel Cron）の呼び出しを認証する秘密の値。設定すると Authorization: Bearer が必須になる
+    CRON_SECRET: z.string().min(16).optional(),
+    MFA_ENCRYPTION_KEY: z
+      .string()
+      .regex(/^[0-9a-f]{64}$/i)
+      .optional(),
+    // Roles that must enroll 2FA at login, e.g. "admin,accounting" (names as in src/lib/roles.ts ROLES)
+    MFA_REQUIRED_ROLES: z
+      .string()
+      .regex(
+        /^\s*(admin|accounting|staff|viewer|tax_advisor)(\s*,\s*(admin|accounting|staff|viewer|tax_advisor))*\s*$/
+      )
+      .optional(),
   },
 
   /**
@@ -41,6 +55,9 @@ export const env = createEnv({
     SMTP_USER: process.env.SMTP_USER,
     SMTP_PASS: process.env.SMTP_PASS,
     MAIL_FROM: process.env.MAIL_FROM,
+    CRON_SECRET: process.env.CRON_SECRET,
+    MFA_ENCRYPTION_KEY: process.env.MFA_ENCRYPTION_KEY,
+    MFA_REQUIRED_ROLES: process.env.MFA_REQUIRED_ROLES,
     // NEXT_PUBLIC_CLIENTVAR: process.env.NEXT_PUBLIC_CLIENTVAR,
   },
   /**

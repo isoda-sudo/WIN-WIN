@@ -1,13 +1,9 @@
 import bcrypt from "bcrypt";
 import { eq } from "drizzle-orm";
 import { type NextRequest, NextResponse } from "next/server";
+import { ROLE_LABELS } from "~/lib/roles";
 import { logAudit } from "~/server/audit/log";
-import {
-  AUTH_COOKIE_MAX_AGE_SECONDS,
-  AUTH_COOKIE_NAME,
-  authCookieOptions,
-  signAuthToken,
-} from "~/server/auth/jwt";
+import { respondAfterPassword } from "~/server/auth/login-response";
 import { db } from "~/server/db";
 import { invitations, users } from "~/server/db/schema";
 
@@ -16,11 +12,7 @@ export const runtime = "nodejs";
 const BCRYPT_ROUNDS = 10;
 const MIN_PASSWORD_LENGTH = 8;
 
-const INVITE_ROLE_LABELS: Record<string, string> = {
-  admin: "管理者",
-  accounting: "経理部",
-  staff: "一般社員",
-};
+const INVITE_ROLE_LABELS: Record<string, string> = ROLE_LABELS;
 
 /** 招待を受諾してアカウント作成（パスワード設定／認証不要） */
 export async function POST(req: NextRequest) {
@@ -104,18 +96,5 @@ export async function POST(req: NextRequest) {
     ],
   });
 
-  const jwtToken = signAuthToken({
-    id: user.id,
-    email: user.email,
-    tv: user.tokenVersion ?? 1,
-  });
-  const res = NextResponse.json({
-    user: { id: user.id, email: user.email, name: user.name, role: user.role },
-  });
-  res.cookies.set(
-    AUTH_COOKIE_NAME,
-    jwtToken,
-    authCookieOptions(AUTH_COOKIE_MAX_AGE_SECONDS)
-  );
-  return res;
+  return respondAfterPassword(user);
 }

@@ -3,6 +3,7 @@
 import { Plus } from "lucide-react";
 import { useMemo, useState } from "react";
 import { toast } from "sonner";
+import { LoadMore } from "~/components/shared/load-more";
 import { ScrollableTableSection } from "~/components/shared/scrollable-table";
 import { Button } from "~/components/ui/button";
 import {
@@ -24,28 +25,49 @@ import {
   TableRow,
 } from "~/components/ui/table";
 import { Textarea } from "~/components/ui/textarea";
+import { compareAsc, compareDesc, type SortOption } from "~/lib/list-sort";
+import { useSortedPagedList } from "~/lib/use-sorted-paged-list";
 import { api, type RouterOutputs } from "~/trpc/react";
+import { CategoryRow } from "./_components/category-row";
 
 type Category = RouterOutputs["categories"]["list"][number];
+
+const SORT_OPTIONS: SortOption<Category>[] = [
+  {
+    // サーバーの並び（登録順）をそのまま使う
+    compare: () => 0,
+    label: "登録順",
+    value: "default",
+  },
+  {
+    compare: (a, b) => compareDesc(a.id, b.id),
+    label: "登録降順",
+    value: "id-desc",
+  },
+  {
+    compare: (a, b) => compareAsc(a.id, b.id),
+    label: "登録昇順",
+    value: "id-asc",
+  },
+  {
+    compare: (a, b) => compareAsc(a.name, b.name) || compareDesc(a.id, b.id),
+    label: "名称順",
+    value: "name-asc",
+  },
+];
 
 interface FormState {
   name: string;
   note: string;
-  order: string;
 }
 
 const EMPTY_FORM: FormState = {
   name: "",
   note: "",
-  order: "",
 };
 
 function toFormState(c: Category): FormState {
-  return {
-    name: c.name,
-    note: c.note ?? "",
-    order: c.order == null ? "" : String(c.order),
-  };
+  return { name: c.name, note: c.note ?? "" };
 }
 
 export default function CategoriesPage() {
@@ -58,8 +80,29 @@ export default function CategoriesPage() {
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState<FormState>(EMPTY_FORM);
 
+  const filtered = useMemo(() => {
+    if (!categories) {
+      return [];
+    }
+    const kw = keyword.trim().toLowerCase();
+    if (!kw) {
+      return categories;
+    }
+    return categories.filter(
+      (c) =>
+        c.code.toLowerCase().includes(kw) || c.name.toLowerCase().includes(kw)
+    );
+  }, [categories, keyword]);
+
+  const paged = useSortedPagedList({
+    options: SORT_OPTIONS,
+    resetKey: keyword,
+    rows: filtered,
+  });
+
   const createMutation = api.categories.create.useMutation({
     onSuccess: async () => {
+      paged.setSortKey(SORT_OPTIONS[0]?.value ?? "");
       await utils.categories.list.invalidate();
       toast.success("工種を登録しました");
       setCreating(false);
@@ -82,20 +125,6 @@ export default function CategoriesPage() {
     },
     onError: () => toast.error("削除に失敗しました"),
   });
-
-  const filtered = useMemo(() => {
-    if (!categories) {
-      return [];
-    }
-    const kw = keyword.trim().toLowerCase();
-    if (!kw) {
-      return categories;
-    }
-    return categories.filter(
-      (c) =>
-        c.code.toLowerCase().includes(kw) || c.name.toLowerCase().includes(kw)
-    );
-  }, [categories, keyword]);
 
   const openEdit = (c: Category) => {
     if (!canEdit) {
@@ -120,7 +149,6 @@ export default function CategoriesPage() {
     createMutation.mutate({
       name: form.name,
       note: form.note || null,
-      order: form.order ? Number(form.order) : null,
     });
   };
   const submitUpdate = () => {
@@ -132,28 +160,28 @@ export default function CategoriesPage() {
       id: editing.id,
       name: form.name,
       note: form.note || null,
-      order: form.order ? Number(form.order) : null,
     });
   };
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="flex items-center justify-between">
+      <div className="flex flex-col gap-3">
         <div>
           <h1 className="font-bold text-2xl">工種マスタ</h1>
           <p className="text-muted-foreground text-sm">
             工種の一覧を管理します
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-nowrap items-end gap-2">
           <Input
-            className="w-56"
+            className="h-8 min-w-32 flex-1"
             onChange={(e) => setKeyword(e.target.value)}
             placeholder="コード・名称で検索"
             value={keyword}
           />
+
           {canEdit && (
-            <Button onClick={openCreate}>
+            <Button className="h-8 shrink-0" onClick={openCreate}>
               <Plus data-icon="inline-start" />
               新規工種登録
             </Button>
@@ -162,12 +190,11 @@ export default function CategoriesPage() {
       </div>
 
       <ScrollableTableSection count={filtered.length}>
-        <Table>
+        <Table className="text-xs [&_td]:px-1 [&_th]:px-1">
           <TableHeader className="sticky top-0 z-10 bg-background">
             <TableRow>
               <TableHead>コード</TableHead>
               <TableHead>工種名称</TableHead>
-              <TableHead>表示順</TableHead>
               <TableHead>備考</TableHead>
             </TableRow>
           </TableHeader>
@@ -175,7 +202,7 @@ export default function CategoriesPage() {
             {isLoading &&
               Array.from({ length: 5 }, (_, i) => (
                 <TableRow key={`skeleton-${i.toString()}`}>
-                  <TableCell colSpan={4}>
+                  <TableCell colSpan={3}>
                     <Skeleton className="h-6 w-full" />
                   </TableCell>
                 </TableRow>
@@ -184,27 +211,30 @@ export default function CategoriesPage() {
               <TableRow>
                 <TableCell
                   className="text-center text-muted-foreground"
-                  colSpan={4}
+                  colSpan={3}
                 >
                   工種が登録されていません
                 </TableCell>
               </TableRow>
             )}
-            {filtered.map((c) => (
-              <TableRow
-                className={canEdit ? "cursor-pointer" : undefined}
+            {paged.rows.map((c) => (
+              <CategoryRow
+                canEdit={canEdit}
+                category={c}
                 key={c.id}
-                onClick={canEdit ? () => openEdit(c) : undefined}
-              >
-                <TableCell className="tabular-nums">{c.code}</TableCell>
-                <TableCell className="font-medium">{c.name}</TableCell>
-                <TableCell className="tabular-nums">{c.order ?? "-"}</TableCell>
-                <TableCell>{c.note || "-"}</TableCell>
-              </TableRow>
+                onEdit={() => openEdit(c)}
+              />
             ))}
           </TableBody>
         </Table>
       </ScrollableTableSection>
+      <LoadMore
+        className="px-1 py-1"
+        hasMore={paged.hasMore}
+        onMore={paged.loadMore}
+        shown={paged.shown}
+        total={paged.total}
+      />
 
       <Dialog onOpenChange={setCreating} open={creating}>
         <DialogContent>
@@ -266,14 +296,6 @@ function CategoryForm({
       <div className="flex flex-col gap-2">
         <Label>コード</Label>
         <Input disabled placeholder="自動採番" value={code ?? ""} />
-      </div>
-      <div className="flex flex-col gap-2">
-        <Label>表示順</Label>
-        <Input
-          onChange={(e) => set("order", e.target.value)}
-          type="number"
-          value={form.order}
-        />
       </div>
       <div className="col-span-2 flex flex-col gap-2">
         <Label>工種名称 *</Label>

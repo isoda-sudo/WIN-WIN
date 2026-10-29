@@ -1,22 +1,16 @@
 import { eq } from "drizzle-orm";
 import { type NextRequest, NextResponse } from "next/server";
+import {
+  contentDispositionAttachment,
+  contentDispositionInline,
+} from "~/lib/invoice-filename";
+import { denyTaxAdvisor } from "~/server/auth/route-guard";
 import { resolveAuthedUser } from "~/server/auth/session";
 import { db } from "~/server/db";
 import { orders, projects } from "~/server/db/schema";
-import {
-  buildInvoicePDF,
-  type CustomLineItem,
-  type InvoiceVariant,
-} from "~/server/pdf/document";
+import { buildInvoicePDF, type CustomLineItem } from "~/server/pdf/document";
 
 export const runtime = "nodejs";
-
-const INVOICE_VARIANTS: InvoiceVariant[] = ["sealed", "unsealed", "copy"];
-function normalizeVariant(v: unknown): InvoiceVariant {
-  return INVOICE_VARIANTS.includes(v as InvoiceVariant)
-    ? (v as InvoiceVariant)
-    : "sealed";
-}
 
 /** 請求書 PDF（プレビューで手入力編集した内訳を反映） */
 export async function POST(
@@ -26,6 +20,10 @@ export async function POST(
   const user = await resolveAuthedUser(req.headers);
   if (!user) {
     return NextResponse.json({ error: "認証が必要です" }, { status: 401 });
+  }
+  const denied = denyTaxAdvisor(user);
+  if (denied) {
+    return denied;
   }
 
   const { projectId } = await params;
@@ -42,24 +40,23 @@ export async function POST(
     where: eq(orders.projectId, Number(projectId)),
   });
   const reqBody = (await req.json().catch(() => null)) as {
-    variant?: unknown;
     items?: CustomLineItem[];
     invoiceNo?: string;
   } | null;
-  const variant = normalizeVariant(reqBody?.variant);
   const pdfBuffer = await buildInvoicePDF(
     project,
     orderRows,
     reqBody?.items,
-    variant,
     reqBody?.invoiceNo
   );
-  const disposition =
-    req.nextUrl.searchParams.get("inline") === "1" ? "inline" : "attachment";
+  const filename = `invoice-${project.id}.pdf`;
+  const inline = req.nextUrl.searchParams.get("inline") === "1";
   return new NextResponse(new Uint8Array(pdfBuffer), {
     headers: {
       "Content-Type": "application/pdf",
-      "Content-Disposition": `${disposition}; filename="invoice-${project.id}.pdf"`,
+      "Content-Disposition": inline
+        ? contentDispositionInline(filename)
+        : contentDispositionAttachment(filename),
     },
   });
 }

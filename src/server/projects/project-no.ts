@@ -1,5 +1,9 @@
 import { sql } from "drizzle-orm";
-import { fiscalPeriodLabel, fiscalPeriodOfMonth } from "~/lib/fiscal-period";
+import {
+  currentFiscalPeriod,
+  fiscalPeriodLabel,
+  fiscalPeriodOfMonth,
+} from "~/lib/fiscal-period";
 import type { db as dbType } from "~/server/db";
 import { projects } from "~/server/db/schema";
 
@@ -20,7 +24,7 @@ export async function nextProjectNoTx(
   tx: Tx,
   deliveryMonth: string
 ): Promise<string> {
-  const period = fiscalPeriodOfMonth(deliveryMonth) ?? new Date().getFullYear();
+  const period = fiscalPeriodOfMonth(deliveryMonth) ?? currentFiscalPeriod();
   const prefix = `WW${fiscalPeriodLabel(period)}-`;
   await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${prefix}))`);
   const rows = await tx

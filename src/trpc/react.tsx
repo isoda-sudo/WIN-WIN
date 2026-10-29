@@ -6,6 +6,7 @@ import { createTRPCReact } from "@trpc/react-query";
 import type { inferRouterInputs, inferRouterOutputs } from "@trpc/server";
 import { useState } from "react";
 import SuperJSON from "superjson";
+import { editScopeHeaders } from "~/lib/edit-scope";
 
 import type { AppRouter } from "~/server/api/root";
 import { createQueryClient } from "./query-client";
@@ -55,6 +56,10 @@ export function TRPCReactProvider(props: { children: React.ReactNode }) {
           headers: () => {
             const headers = new Headers();
             headers.set("x-trpc-source", "nextjs-react");
+            // 排他制御中の画面からの更新は、サーバーで「他の人が編集中なら拒否」を判定する
+            for (const [k, v] of Object.entries(editScopeHeaders())) {
+              headers.set(k, v);
+            }
             return headers;
           },
         }),

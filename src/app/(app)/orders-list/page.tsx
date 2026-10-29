@@ -1,10 +1,10 @@
 "use client";
 
 import {
-  AlertTriangle,
   CalendarRange,
+  Camera,
   Check,
-  Columns3,
+  Eye,
   FileText,
   Lock,
   Plus,
@@ -18,8 +18,24 @@ import { useRouter, useSearchParams } from "next/navigation";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
 import { EmailRecipientsFields } from "~/components/shared/email-recipients-fields";
+import { FileDropArea, FileDropzone } from "~/components/shared/file-dropzone";
+import { InlineNotesInput } from "~/components/shared/inline-notes-input";
+import { LoadMore } from "~/components/shared/load-more";
+import { MailSignaturePreview } from "~/components/shared/mail-signature-preview";
+import { ScanToPdfDialog } from "~/components/shared/scan-to-pdf";
 import { ScrollableTableSection } from "~/components/shared/scrollable-table";
+import { WarningBadge } from "~/components/shared/warning-badge";
 import { Alert, AlertDescription } from "~/components/ui/alert";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "~/components/ui/alert-dialog";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
@@ -66,6 +82,10 @@ import {
   TooltipTrigger,
 } from "~/components/ui/tooltip";
 import type { EmailContact } from "~/lib/contacts";
+import { ORDER_FILE_KIND_LABEL } from "~/lib/file-naming";
+import type { SortOption } from "~/lib/list-sort";
+import { purchaseOrderMailTemplate } from "~/lib/mail-templates";
+import { orderCostTotal } from "~/lib/order-cost";
 import {
   nextPaymentTermFields,
   PAYMENT_DUE_DAY_CHOICES,
@@ -73,13 +93,23 @@ import {
   parsePaymentTermLabel,
   withCurrentValue,
 } from "~/lib/payment-term";
+import { calcGrossMarginRate } from "~/lib/reporting-profit";
+import { isReadOnlyRole } from "~/lib/roles";
 import {
   ORDER_STATUS_CLASS,
   orderRowState,
   statusClass,
 } from "~/lib/status-styles";
+import { useCurrentRole } from "~/lib/use-current-role";
+import {
+  EditLockBanner,
+  EditLockedProvider,
+  useEditLock,
+} from "~/lib/use-edit-lock";
+import { useSortedPagedList } from "~/lib/use-sorted-paged-list";
 import { cn } from "~/lib/utils";
 import { api, type RouterOutputs } from "~/trpc/react";
+import { OrderFileMetaDialog } from "./order-file-meta-dialog";
 
 type Order = RouterOutputs["orders"]["list"][number];
 type Project = RouterOutputs["projects"]["list"][number];
@@ -137,6 +167,7 @@ const NOTES_EXCERPT_LEN = 20;
 // した時だけ表示する。工期は全発注で共通のためヘッダーへ移動し、
 // 追加・変更区分は廃止した。
 const OPTIONAL_COLUMNS = [
+  "paymentNo",
   "category",
   "vendor",
   "estimate",
@@ -155,6 +186,7 @@ type ColumnState = Record<OptionalColumn, boolean>;
 
 function defaultColumnState(): ColumnState {
   return {
+    paymentNo: true,
     category: true,
     vendor: true,
     estimate: true,
@@ -256,6 +288,11 @@ function vendorMatchesCategory(
   return Boolean(categoryName) && tags.includes(categoryName);
 }
 
+// 並びは発注IDの昇順で固定（行は事前に並べ済みなので、ここでは並びを変えない）。
+const ORDER_SORT_OPTIONS: readonly SortOption<Order>[] = [
+  { compare: () => 0, label: "ID昇順", value: "id-asc" },
+];
+
 export default function OrdersListPage() {
   return (
     <Suspense>
@@ -303,7 +340,7 @@ const EMPTY_ORDER_FORM: OrderFormState = {
   details: "",
   estimate: "",
   handover: "",
-  payment: "月末締翌月末払い",
+  payment: "月末締翌々月5日払い",
   paymentDate: "",
   planned: "",
   site: "",
@@ -319,7 +356,7 @@ function toOrderForm(o: Order): OrderFormState {
     details: o.details ?? "",
     estimate: o.estimate == null ? "" : String(o.estimate),
     handover: o.handover ?? "",
-    payment: o.payment ?? "月末締翌月末払い",
+    payment: o.payment ?? "月末締翌々月5日払い",
     paymentDate: o.paymentDate ?? "",
     planned: o.planned == null ? "" : String(o.planned),
     site: o.site ?? "",
@@ -406,18 +443,11 @@ function LastUpdatedInfo({
     );
   }
 
-  const actionLabel = lastUpdated.action
-    ? (ACTION_LABELS[lastUpdated.action] ?? lastUpdated.action)
-    : null;
-
   return (
     <HoverCard openDelay={150}>
       <HoverCardTrigger asChild>
         <div className="cursor-default whitespace-nowrap text-muted-foreground text-xs">
-          <p>
-            最終更新者: {lastUpdated.userName || lastUpdated.userEmail || "-"}
-            {actionLabel ? `（${actionLabel}）` : ""}
-          </p>
+          <p>最終更新者: {lastUpdated.userName || "-"}</p>
           <p>
             更新日時:{" "}
             {lastUpdated.createdAt
@@ -458,7 +488,7 @@ function RecentActivityItem({
           ? new Date(entry.createdAt).toLocaleString("ja-JP")
           : "-"}
         {" ・"}
-        {entry.userName || entry.userEmail || "-"}
+        {entry.userName || "-"}
         {" ・"}
         {label}
       </p>
@@ -574,18 +604,157 @@ function RevenueCard({
   );
 }
 
+/** 一覧の失敗（再試行付き）/ 空状態を1行で表示する。 */
+function QueryStateRow({
+  colSpan,
+  emptyMessage,
+  errorMessage,
+  isEmpty,
+  isError,
+  onRetry,
+}: {
+  colSpan: number;
+  emptyMessage: string;
+  errorMessage: string;
+  isEmpty: boolean;
+  isError: boolean;
+  onRetry: () => void;
+}) {
+  if (isError) {
+    return (
+      <QueryErrorRow
+        colSpan={colSpan}
+        message={errorMessage}
+        onRetry={onRetry}
+      />
+    );
+  }
+  if (!isEmpty) {
+    return null;
+  }
+  return (
+    <TableRow>
+      <TableCell
+        className="text-center text-muted-foreground"
+        colSpan={colSpan}
+      >
+        {emptyMessage}
+      </TableCell>
+    </TableRow>
+  );
+}
+
+/** 一覧クエリ失敗時の表内エラー行（再試行ボタン付き）。 */
+function QueryErrorRow({
+  colSpan,
+  message,
+  onRetry,
+}: {
+  colSpan: number;
+  message: string;
+  onRetry: () => void;
+}) {
+  return (
+    <TableRow>
+      <TableCell
+        className="text-center text-muted-foreground"
+        colSpan={colSpan}
+      >
+        <p className="mb-2">{message}</p>
+        <Button onClick={onRetry} size="xs" variant="outline">
+          再試行
+        </Button>
+      </TableCell>
+    </TableRow>
+  );
+}
+
+/** 発注削除の確認ダイアログ。 */
+function OrderDeleteDialog({
+  onConfirm,
+  onOpenChange,
+  target,
+}: {
+  onConfirm: (id: number) => void;
+  onOpenChange: (open: boolean) => void;
+  target: Order | null;
+}) {
+  return (
+    <AlertDialog onOpenChange={onOpenChange} open={target !== null}>
+      <AlertDialogContent>
+        <AlertDialogHeader>
+          <AlertDialogTitle>この発注を削除しますか？</AlertDialogTitle>
+          <AlertDialogDescription>
+            {target?.category ?? ""} {target?.vendor ?? ""}{" "}
+            を削除します。この操作は取り消せません。
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        <AlertDialogFooter>
+          <AlertDialogCancel>キャンセル</AlertDialogCancel>
+          <AlertDialogAction
+            onClick={() => {
+              if (target) {
+                onConfirm(target.id);
+              }
+              onOpenChange(false);
+            }}
+          >
+            削除する
+          </AlertDialogAction>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
+  );
+}
+
+/** 「行を追加」の行が表示されているか（表示中は「次の20件」ボタンをその行に置く）。 */
+function isAddRowVisible(creating: boolean, readOnly: boolean): boolean {
+  return !(creating || readOnly);
+}
+
+/** 工種フィルタの選択肢。マスタがあればその名前、なければ発注明細の工種名（重複除去）。 */
+function categoryFilterNames(
+  categories: { name: string }[] | undefined,
+  orders: { category: string | null }[]
+): string[] {
+  if (categories) {
+    return categories.map((c) => c.name);
+  }
+  return [
+    ...new Set(
+      orders
+        .map((o) => o.category)
+        .filter((name): name is string => Boolean(name))
+    ),
+  ];
+}
+
 function OrderDetailView({ projectId }: { projectId: number }) {
   const utils = api.useUtils();
   const searchParams = useSearchParams();
   const { data: project } = api.projects.list.useQuery(undefined, {
     select: (rows) => rows.find((p) => p.id === projectId),
   });
-  const { data: orders, isLoading } = api.orders.list.useQuery();
-  const { data: categories } = api.categories.list.useQuery();
-  const { data: vendors } = api.vendors.list.useQuery();
+  const {
+    data: orders,
+    isLoading,
+    isError,
+    refetch,
+  } = api.orders.list.useQuery();
   const { data: me } = api.users.me.useQuery();
+  // 税理士・社労士は工種・発注先マスタを取得できない（ロール確定後にのみ取得）。
+  const {
+    canReadMasterData: masterEnabled,
+    isReadOnly: isViewer,
+    isTaxAdvisor: isTaxAdvisorRole,
+  } = useCurrentRole();
+  const { data: categories } = api.categories.list.useQuery(undefined, {
+    enabled: masterEnabled,
+  });
+  const { data: vendors } = api.vendors.list.useQuery(undefined, {
+    enabled: masterEnabled,
+  });
   const columns = useColumnVisibility(me?.role);
-  const isViewer = me?.role === "viewer";
   const isAdmin = me?.role === "admin";
   const fixed = Boolean(project?.lockedAt);
   const lockDisabled = !(fixed || isPastDeliveryMonth(project?.deliveryMonth));
@@ -595,7 +764,9 @@ function OrderDetailView({ projectId }: { projectId: number }) {
   } else if (lockDisabled) {
     lockTooltipLabel = "引渡月以前のため確定できません";
   }
-  const readOnly = isViewer || fixed;
+  // 工事計画は閲覧を常に許可し、更新・アップロードだけ1名ずつ（他の人が編集中は閲覧のみ）
+  const lock = useEditLock(`plan:${projectId}`);
+  const readOnly = isViewer || fixed || lock.locked;
 
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -604,29 +775,49 @@ function OrderDetailView({ projectId }: { projectId: number }) {
   const [creating, setCreating] = useState(false);
   const [form, setForm] = useState<OrderFormState>(EMPTY_ORDER_FORM);
   const [poOrder, setPoOrder] = useState<Order | null>(null);
+  const [deleteTarget, setDeleteTarget] = useState<Order | null>(null);
   const { data: lastUpdated } = api.projects.lastUpdated.useQuery({
     projectId,
   });
   const { data: recentActivity } = api.projects.recentActivity.useQuery({
     projectId,
   });
-  const updateAmountMutation = api.projects.update.useMutation({
+  const updateAmountMutation = api.projects.updateRevenue.useMutation({
     onSuccess: () => utils.projects.list.invalidate(),
-    onError: () => toast.error("契約金額の更新に失敗しました"),
+    onError: (err) => {
+      toast.error(err.message || "売上の更新に失敗しました");
+      if (err.data?.code === "CONFLICT") {
+        utils.projects.list.invalidate();
+      }
+    },
   });
   const lockMutation = api.projects.lock.useMutation({
     onSuccess: () => {
       utils.projects.list.invalidate();
       toast.success("確定（ロック）しました");
     },
-    onError: () => toast.error("確定に失敗しました"),
+    onError: (err) => {
+      if (err.data?.code === "CONFLICT") {
+        toast.error("他の人が案件を更新しました。再読み込みしました");
+        utils.projects.list.invalidate();
+        return;
+      }
+      toast.error("確定に失敗しました");
+    },
   });
   const unlockMutation = api.projects.unlock.useMutation({
     onSuccess: () => {
       utils.projects.list.invalidate();
       toast.success("確定を解除しました");
     },
-    onError: () => toast.error("解除に失敗しました"),
+    onError: (err) => {
+      if (err.data?.code === "CONFLICT") {
+        toast.error("他の人が案件を更新しました。再読み込みしました");
+        utils.projects.list.invalidate();
+        return;
+      }
+      toast.error("解除に失敗しました");
+    },
   });
 
   const projectOrders = useMemo(
@@ -634,8 +825,28 @@ function OrderDetailView({ projectId }: { projectId: number }) {
     [orders, projectId]
   );
 
+  // 工種フィルタの選択肢。マスタを取得できない税理士・社労士は、発注明細の
+  // 工種名（行に含まれる）から作る。
+  const categoryFilterOptions = useMemo(() => {
+    // この案件の発注に実在する工種だけ（選択中の値は消さない）
+    const used = new Set(projectOrders.map((o) => o.category));
+    return categoryFilterNames(categories, projectOrders).filter(
+      (name) => used.has(name) || name === categoryFilter
+    );
+  }, [categories, projectOrders, categoryFilter]);
+  const statusFilterOptions = useMemo(() => {
+    const used = new Set(projectOrders.map((o) => o.status));
+    return STATUSES.filter((s) => used.has(s) || s === statusFilter);
+  }, [projectOrders, statusFilter]);
+
+  // 並びは発注IDの昇順で固定
+  const orderedOrders = useMemo(
+    () => [...projectOrders].sort((a, b) => a.id - b.id),
+    [projectOrders]
+  );
+
   const filtered = useMemo(() => {
-    let rows = projectOrders;
+    let rows = orderedOrders;
     if (categoryFilter !== "all") {
       rows = rows.filter((o) => o.category === categoryFilter);
     }
@@ -651,7 +862,13 @@ function OrderDetailView({ projectId }: { projectId: number }) {
       );
     }
     return rows;
-  }, [projectOrders, categoryFilter, statusFilter, keyword]);
+  }, [orderedOrders, categoryFilter, statusFilter, keyword]);
+
+  const paged = useSortedPagedList({
+    options: ORDER_SORT_OPTIONS,
+    resetKey: `${categoryFilter}|${statusFilter}|${keyword}`,
+    rows: filtered,
+  });
 
   // 固定列（請求書/請書/注文書）3列 + トグル可能な列
   // （予定金額・決定金額は1セルに統合表示するため、両方ONでも1列分としてカウントする）
@@ -664,12 +881,22 @@ function OrderDetailView({ projectId }: { projectId: number }) {
   }, [columns.state]);
 
   const summary = useMemo(() => {
-    const plannedCost = projectOrders.reduce((s, o) => s + (o.planned ?? 0), 0);
-    const decidedCost = projectOrders.reduce((s, o) => s + (o.decided ?? 0), 0);
+    // 外注費は振込手数料込み（レポートの粗利と同じ基準）
+    const plannedCost = projectOrders.reduce(
+      (s, o) => s + (o.planned ?? 0) + (o.transferFee ?? 0),
+      0
+    );
+    const decidedCost = projectOrders.reduce(
+      (s, o) => s + orderCostTotal(o),
+      0
+    );
     const revenue = project?.amount ?? 0;
     const plannedRevenue = project?.plannedAmount ?? 0;
-    const margin = (rev: number, cost: number) =>
-      rev ? (((rev - cost) / rev) * 100).toFixed(1) : "0.0";
+    // 粗利率は、レポートと同じ計算（売上0なら「-」）にそろえる
+    const margin = (rev: number, cost: number) => {
+      const rate = calcGrossMarginRate(rev, rev - cost);
+      return rate === null ? "-" : `${rate.toFixed(1)}%`;
+    };
     return {
       revenue,
       plannedRevenue,
@@ -741,6 +968,7 @@ function OrderDetailView({ projectId }: { projectId: number }) {
     if (readOnly) {
       return;
     }
+    setEditing(null);
     setForm(EMPTY_ORDER_FORM);
     setCreating(true);
   };
@@ -748,6 +976,7 @@ function OrderDetailView({ projectId }: { projectId: number }) {
     if (readOnly) {
       return;
     }
+    setCreating(false);
     setEditing(o);
     setForm(toOrderForm(o));
   };
@@ -771,7 +1000,7 @@ function OrderDetailView({ projectId }: { projectId: number }) {
       site: form.site,
       handover: form.handover,
       payment: form.payment,
-      paymentDate: form.paymentDate || undefined,
+      paymentDate: form.paymentDate,
       assignee: form.assignee,
     });
   };
@@ -792,7 +1021,7 @@ function OrderDetailView({ projectId }: { projectId: number }) {
       site: form.site,
       handover: form.handover,
       payment: form.payment,
-      paymentDate: form.paymentDate || undefined,
+      paymentDate: form.paymentDate,
       assignee: form.assignee,
     });
   };
@@ -808,281 +1037,332 @@ function OrderDetailView({ projectId }: { projectId: number }) {
   }, [vendors, form.category]);
 
   return (
-    <div className="flex flex-col gap-6">
-      <div className="flex flex-wrap items-start justify-between gap-4">
-        <div className="flex flex-col gap-1.5">
-          <h1 className="font-semibold text-2xl tracking-tight">
-            {project
-              ? `${project.projectNo} ${project.name}`
-              : `案件 #${projectId}`}
-          </h1>
-          <div className="flex items-center gap-1.5 text-muted-foreground text-sm">
-            <CalendarRange className="size-4" />
-            <span>
-              {project?.startDate || "-"} 〜 {project?.endDate || "-"}
-            </span>
+    <EditLockedProvider value={lock.locked}>
+      <div className="flex flex-col gap-6">
+        <EditLockBanner
+          freed={lock.freed}
+          holder={lock.holder}
+          locked={lock.locked}
+        />
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="flex flex-col gap-1.5">
+            <h1 className="font-semibold text-2xl tracking-tight">
+              {project
+                ? `${project.projectNo} ${project.name}`
+                : `案件 #${projectId}`}
+            </h1>
+            <div className="flex items-center gap-1.5 text-muted-foreground text-sm">
+              <CalendarRange className="size-4" />
+              <span>
+                {project?.startDate || "-"} 〜 {project?.endDate || "-"}
+              </span>
+            </div>
+          </div>
+          <div className="flex flex-col items-end gap-2">
+            <Button
+              onClick={() => {
+                window.location.href = `/api/export/plan?projectId=${projectId}`;
+              }}
+              size="sm"
+              variant="outline"
+            >
+              CSV出力
+            </Button>
+            {isAdmin && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span>
+                    <Button
+                      disabled={lockDisabled}
+                      onClick={() =>
+                        (fixed ? unlockMutation : lockMutation).mutate({
+                          id: projectId,
+                          version: project?.version ?? 1,
+                        })
+                      }
+                      size="sm"
+                      variant={fixed ? "secondary" : "outline"}
+                    >
+                      {fixed ? (
+                        <Unlock data-icon="inline-start" />
+                      ) : (
+                        <Lock data-icon="inline-start" />
+                      )}
+                      {fixed ? "確定（ロック）を解除" : "確定（ロック）"}
+                    </Button>
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent>{lockTooltipLabel}</TooltipContent>
+              </Tooltip>
+            )}
+            {!isAdmin && fixed && (
+              <Badge variant="secondary">
+                <Lock data-icon="inline-start" />
+                確定(ロック)済み
+              </Badge>
+            )}
+            <LastUpdatedInfo
+              lastUpdated={lastUpdated}
+              recentActivity={recentActivity}
+            />
           </div>
         </div>
-        <div className="flex flex-col items-end gap-2">
-          {isAdmin && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <span>
-                  <Button
-                    disabled={lockDisabled}
-                    onClick={() =>
-                      (fixed ? unlockMutation : lockMutation).mutate({
-                        id: projectId,
-                      })
-                    }
-                    size="sm"
-                    variant={fixed ? "secondary" : "outline"}
-                  >
-                    {fixed ? (
-                      <Unlock data-icon="inline-start" />
-                    ) : (
-                      <Lock data-icon="inline-start" />
-                    )}
-                    {fixed ? "確定（ロック）を解除" : "確定（ロック）"}
-                  </Button>
-                </span>
-              </TooltipTrigger>
-              <TooltipContent>{lockTooltipLabel}</TooltipContent>
-            </Tooltip>
-          )}
-          {!isAdmin && fixed && (
-            <Badge variant="secondary">
-              <Lock data-icon="inline-start" />
-              確定(ロック)済み
-            </Badge>
-          )}
-          <LastUpdatedInfo
-            lastUpdated={lastUpdated}
-            recentActivity={recentActivity}
+
+        <div className="grid grid-cols-4 gap-4">
+          <RevenueCard
+            decidedValue={summary.revenue}
+            onSaveDecided={(value) =>
+              project &&
+              updateAmountMutation.mutate({
+                amount: value,
+                id: project.id,
+                version: project.version ?? 1,
+              })
+            }
+            onSavePlanned={(value) =>
+              project &&
+              updateAmountMutation.mutate({
+                id: project.id,
+                plannedAmount: value,
+                version: project.version ?? 1,
+              })
+            }
+            plannedValue={summary.plannedRevenue}
+            readOnly={readOnly}
+          />
+          <SummaryPlannedDecidedCard
+            decidedValue={`¥${summary.decidedCost.toLocaleString()}`}
+            plannedValue={`¥${summary.plannedCost.toLocaleString()}`}
+            title="外注費合計（振込手数料込み）"
+          />
+          <SummaryPlannedDecidedCard
+            decidedValue={`¥${summary.decidedProfit.toLocaleString()}`}
+            plannedValue={`¥${summary.plannedProfit.toLocaleString()}`}
+            title="想定利益額"
+          />
+          <SummaryPlannedDecidedCard
+            decidedValue={summary.decidedMargin}
+            plannedValue={summary.plannedMargin}
+            title="想定粗利率"
           />
         </div>
-      </div>
 
-      <div className="grid grid-cols-4 gap-4">
-        <RevenueCard
-          decidedValue={summary.revenue}
-          onSaveDecided={(value) =>
-            project &&
-            updateAmountMutation.mutate({
-              amount: value,
-              id: project.id,
-              version: project.version,
-            })
-          }
-          onSavePlanned={(value) =>
-            project &&
-            updateAmountMutation.mutate({
-              id: project.id,
-              plannedAmount: value,
-              version: project.version,
-            })
-          }
-          plannedValue={summary.plannedRevenue}
-          readOnly={readOnly}
-        />
-        <SummaryPlannedDecidedCard
-          decidedValue={`¥${summary.decidedCost.toLocaleString()}`}
-          plannedValue={`¥${summary.plannedCost.toLocaleString()}`}
-          title="外注費合計"
-        />
-        <SummaryPlannedDecidedCard
-          decidedValue={`¥${summary.decidedProfit.toLocaleString()}`}
-          plannedValue={`¥${summary.plannedProfit.toLocaleString()}`}
-          title="想定利益額"
-        />
-        <SummaryPlannedDecidedCard
-          decidedValue={`${summary.decidedMargin}%`}
-          plannedValue={`${summary.plannedMargin}%`}
-          title="想定粗利率"
-        />
-      </div>
-
-      <div className="flex items-center gap-2">
-        <Select onValueChange={setCategoryFilter} value={categoryFilter}>
-          <SelectTrigger className="w-40">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">すべての工種</SelectItem>
-            {categories?.map((c) => (
-              <SelectItem key={c.id} value={c.name}>
-                {c.name}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Select onValueChange={setStatusFilter} value={statusFilter}>
-          <SelectTrigger className="w-40">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">すべてのステータス</SelectItem>
-            {STATUSES.map((s) => (
-              <SelectItem key={s} value={s}>
-                {s}
-              </SelectItem>
-            ))}
-          </SelectContent>
-        </Select>
-        <Input
-          className="w-64"
-          onChange={(e) => setKeyword(e.target.value)}
-          placeholder="工事内容・発注先で検索"
-          value={keyword}
-        />
-        <Popover>
-          <PopoverTrigger asChild>
-            <Button className="ml-auto" variant="outline">
-              <Columns3 data-icon="inline-start" />
-              表示項目
-            </Button>
-          </PopoverTrigger>
-          <PopoverContent align="end" className="w-56">
-            <div className="flex max-h-[70vh] flex-col gap-3 overflow-y-auto">
-              {(
-                [
-                  ["category", "工種"],
-                  ["vendor", "発注先"],
-                  ["estimate", "見積額"],
-                  ["planned", "予定金額"],
-                  ["decided", "決定金額"],
-                  ["notes", "備考"],
-                  ["status", "ステータス"],
-                  ["site", "工事場所"],
-                  ["assignee", "担当者"],
-                  ["handover", "検査・引渡時期"],
-                  ["payment", "支払条件"],
-                  ["paymentDate", "支払期日"],
-                ] as const
-              ).map(([key, label]) => (
-                <label
-                  className="flex items-center gap-2 text-sm"
-                  htmlFor={`col-toggle-${key}`}
-                  key={key}
-                >
-                  <Checkbox
-                    checked={columns.state[key]}
-                    id={`col-toggle-${key}`}
-                    onCheckedChange={(checked) =>
-                      columns.toggle(key, checked === true)
-                    }
-                  />
-                  {label}
-                </label>
+        <div className="flex flex-nowrap items-end gap-2">
+          <Select onValueChange={setCategoryFilter} value={categoryFilter}>
+            <SelectTrigger className="w-32 shrink-0" size="sm">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">すべての工種</SelectItem>
+              {categoryFilterOptions.map((name) => (
+                <SelectItem key={name} value={name}>
+                  {name}
+                </SelectItem>
               ))}
-            </div>
-          </PopoverContent>
-        </Popover>
-      </div>
-
-      <ScrollableTableSection count={filtered.length}>
-        <Table>
-          <TableHeader className="sticky top-0 z-10 bg-background">
-            <OrderColumnHeaders state={columns.state} />
-          </TableHeader>
-          <TableBody>
-            {isLoading &&
-              Array.from({ length: 3 }, (_, i) => (
-                <TableRow key={`sk-${i.toString()}`}>
-                  <TableCell colSpan={visibleColumnCount}>
-                    <Skeleton className="h-6 w-full" />
-                  </TableCell>
-                </TableRow>
+            </SelectContent>
+          </Select>
+          <Select onValueChange={setStatusFilter} value={statusFilter}>
+            <SelectTrigger className="w-32 shrink-0" size="sm">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">すべてのステータス</SelectItem>
+              {statusFilterOptions.map((s) => (
+                <SelectItem key={s} value={s}>
+                  {s}
+                </SelectItem>
               ))}
-            {!isLoading && filtered.length === 0 && (
-              <TableRow>
-                <TableCell
-                  className="text-center text-muted-foreground"
+            </SelectContent>
+          </Select>
+          <Input
+            className="h-8 min-w-32 flex-1"
+            onChange={(e) => setKeyword(e.target.value)}
+            placeholder="工事内容・発注先で検索"
+            value={keyword}
+          />
+          <Popover>
+            <PopoverTrigger asChild>
+              <Button className="h-8 shrink-0" size="sm" variant="outline">
+                <Eye data-icon="inline-start" />
+                表示項目
+              </Button>
+            </PopoverTrigger>
+            <PopoverContent align="end" className="w-56">
+              <div className="flex max-h-[70vh] flex-col gap-3 overflow-y-auto">
+                {(
+                  [
+                    ["paymentNo", "支払ID"],
+                    ["category", "工種"],
+                    ["vendor", "発注先"],
+                    ["estimate", "見積額"],
+                    ["planned", "予定金額"],
+                    ["decided", "決定金額"],
+                    ["notes", "備考"],
+                    ["status", "ステータス"],
+                    ["site", "工事場所"],
+                    ["assignee", "担当者"],
+                    ["handover", "検査・引渡時期"],
+                    ["payment", "支払条件"],
+                    ["paymentDate", "支払期日"],
+                  ] as const
+                ).map(([key, label]) => (
+                  <label
+                    className="flex items-center gap-2 text-sm"
+                    htmlFor={`col-toggle-${key}`}
+                    key={key}
+                  >
+                    <Checkbox
+                      checked={columns.state[key]}
+                      id={`col-toggle-${key}`}
+                      onCheckedChange={(checked) =>
+                        columns.toggle(key, checked === true)
+                      }
+                    />
+                    {label}
+                  </label>
+                ))}
+              </div>
+            </PopoverContent>
+          </Popover>
+        </div>
+
+        <ScrollableTableSection count={filtered.length}>
+          <Table className="text-xs [&_td]:px-1 [&_th]:px-1">
+            <TableHeader className="sticky top-0 z-10 bg-background">
+              <OrderColumnHeaders state={columns.state} />
+            </TableHeader>
+            <TableBody>
+              {isLoading &&
+                Array.from({ length: 3 }, (_, i) => (
+                  <TableRow key={`sk-${i.toString()}`}>
+                    <TableCell colSpan={visibleColumnCount}>
+                      <Skeleton className="h-6 w-full" />
+                    </TableCell>
+                  </TableRow>
+                ))}
+              {!isLoading && (
+                <QueryStateRow
                   colSpan={visibleColumnCount}
-                >
-                  発注明細がありません
-                </TableCell>
-              </TableRow>
-            )}
-            {filtered.map((o) =>
-              editing && editing.id === o.id ? (
-                <OrderEditRow
+                  emptyMessage="発注明細がありません"
+                  errorMessage="発注明細の取得に失敗しました"
+                  isEmpty={filtered.length === 0}
+                  isError={isError}
+                  onRetry={() => refetch()}
+                />
+              )}
+              {paged.rows.map((o) =>
+                editing && editing.id === o.id ? (
+                  <OrderEditRow
+                    categories={categories}
+                    columns={columns.state}
+                    deliveryMonth={project?.deliveryMonth}
+                    form={form}
+                    key={o.id}
+                    onCancel={() => setEditing(null)}
+                    onDelete={() => setDeleteTarget(o)}
+                    onSave={submitUpdate}
+                    savePending={updateMutation.isPending}
+                    setForm={setForm}
+                    vendorOptions={vendorOptions}
+                  />
+                ) : (
+                  <OrderRow
+                    columns={columns.state}
+                    hidePo={isTaxAdvisorRole}
+                    isViewer={readOnly}
+                    key={o.id}
+                    onFieldSave={(field, value) =>
+                      updateFieldMutation.mutate({
+                        id: o.id,
+                        version: o.version,
+                        [field]: value,
+                      })
+                    }
+                    onNotesSave={(details) =>
+                      updateFieldMutation.mutate({
+                        id: o.id,
+                        version: o.version,
+                        details,
+                      })
+                    }
+                    onOpenEdit={() => openEdit(o)}
+                    onOpenPo={() => setPoOrder(o)}
+                    onStatusChange={(status) =>
+                      updateStatusMutation.mutate({
+                        id: o.id,
+                        version: o.version,
+                        status,
+                      })
+                    }
+                    order={o}
+                    vendors={vendors}
+                  />
+                )
+              )}
+              {creating && !readOnly ? (
+                <OrderCreateRow
                   categories={categories}
                   columns={columns.state}
+                  deliveryMonth={project?.deliveryMonth}
                   form={form}
-                  key={o.id}
-                  onCancel={() => setEditing(null)}
-                  onDelete={() => deleteMutation.mutate({ id: o.id })}
-                  onSave={submitUpdate}
-                  savePending={updateMutation.isPending}
+                  onCancel={() => setCreating(false)}
+                  onSave={submitCreate}
+                  savePending={createMutation.isPending}
                   setForm={setForm}
                   vendorOptions={vendorOptions}
                 />
               ) : (
-                <OrderRow
-                  columns={columns.state}
-                  isViewer={readOnly}
-                  key={o.id}
-                  onFieldSave={(field, value) =>
-                    updateFieldMutation.mutate({
-                      id: o.id,
-                      version: o.version,
-                      [field]: value,
-                    })
-                  }
-                  onOpenEdit={() => openEdit(o)}
-                  onOpenPo={() => setPoOrder(o)}
-                  onStatusChange={(status) =>
-                    updateStatusMutation.mutate({
-                      id: o.id,
-                      version: o.version,
-                      status,
-                    })
-                  }
-                  order={o}
-                  vendors={vendors}
-                />
-              )
-            )}
-            {creating && !readOnly ? (
-              <OrderCreateRow
-                categories={categories}
-                columns={columns.state}
-                form={form}
-                onCancel={() => setCreating(false)}
-                onSave={submitCreate}
-                savePending={createMutation.isPending}
-                setForm={setForm}
-                vendorOptions={vendorOptions}
-              />
-            ) : (
-              !readOnly && (
-                <TableRow>
-                  <TableCell colSpan={visibleColumnCount}>
-                    <button
-                      className="flex w-full items-center gap-1 py-1 text-muted-foreground text-sm hover:text-foreground"
-                      onClick={openCreate}
-                      type="button"
-                    >
-                      <Plus className="size-4" />
-                      行を追加
-                    </button>
-                  </TableCell>
-                </TableRow>
-              )
-            )}
-          </TableBody>
-        </Table>
-      </ScrollableTableSection>
+                !readOnly && (
+                  <TableRow>
+                    <TableCell colSpan={visibleColumnCount}>
+                      <div className="flex items-center justify-between gap-3">
+                        <button
+                          className="flex items-center gap-1 py-1 text-muted-foreground text-sm hover:text-foreground"
+                          onClick={openCreate}
+                          type="button"
+                        >
+                          <Plus className="size-4" />
+                          行を追加
+                        </button>
+                        <LoadMore
+                          hasMore={paged.hasMore}
+                          onMore={paged.loadMore}
+                          shown={paged.shown}
+                          total={paged.total}
+                        />
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                )
+              )}
+            </TableBody>
+          </Table>
+        </ScrollableTableSection>
+        {!isAddRowVisible(creating, readOnly) && (
+          <LoadMore
+            className="px-1 py-1"
+            hasMore={paged.hasMore}
+            onMore={paged.loadMore}
+            shown={paged.shown}
+            total={paged.total}
+          />
+        )}
 
-      {poOrder && (
-        <PurchaseOrderModal
-          onClose={() => setPoOrder(null)}
-          order={poOrder}
-          project={project}
+        {poOrder && (
+          <PurchaseOrderModal
+            onClose={() => setPoOrder(null)}
+            order={poOrder}
+            project={project}
+          />
+        )}
+
+        <OrderDeleteDialog
+          onConfirm={(id) => deleteMutation.mutate({ id })}
+          onOpenChange={(open) => !open && setDeleteTarget(null)}
+          target={deleteTarget}
         />
-      )}
-    </div>
+      </div>
+    </EditLockedProvider>
   );
 }
 
@@ -1090,6 +1370,7 @@ function OrderDetailView({ projectId }: { projectId: number }) {
 function OrderColumnHeaders({ state }: { state: ColumnState }) {
   return (
     <TableRow>
+      {state.paymentNo && <TableHead>支払ID</TableHead>}
       {state.category && <TableHead>工種</TableHead>}
       {state.vendor && <TableHead>発注先</TableHead>}
       {state.estimate && <TableHead>見積額</TableHead>}
@@ -1112,21 +1393,25 @@ function OrderColumnHeaders({ state }: { state: ColumnState }) {
 
 function OrderRow({
   columns,
+  hidePo,
   isViewer,
   order: o,
   onFieldSave,
+  onNotesSave,
   onOpenEdit,
   onOpenPo,
   onStatusChange,
   vendors,
 }: {
   columns: ColumnState;
+  hidePo?: boolean;
   isViewer?: boolean;
   order: Order;
   onFieldSave: (
     field: "decided" | "estimate" | "planned",
     value: number | null
   ) => void;
+  onNotesSave: (notes: string) => void;
   onOpenEdit: () => void;
   onOpenPo: () => void;
   onStatusChange: (status: string) => void;
@@ -1143,11 +1428,21 @@ function OrderRow({
   );
   const openEdit = isViewer ? undefined : onOpenEdit;
   return (
-    <TableRow className={cn(!isViewer && "cursor-pointer", rowState.className)}>
+    <TableRow
+      className={cn(!isViewer && "cursor-pointer", rowState.className)}
+      onDragOver={(e) => {
+        // ファイルを請書/請求書の欄以外に落とした場合、ブラウザがPDFを開いて画面遷移しないようにする
+        if (e.dataTransfer.types.includes("Files")) {
+          e.preventDefault();
+        }
+      }}
+      onDrop={(e) => e.preventDefault()}
+    >
       <OrderPrimaryCells
         columns={columns}
         isViewer={isViewer}
         onFieldSave={onFieldSave}
+        onNotesSave={onNotesSave}
         onOpenEdit={openEdit}
         onStatusChange={onStatusChange}
         order={o}
@@ -1162,14 +1457,16 @@ function OrderRow({
         order={o}
       />
       <TableCell onClick={(e) => e.stopPropagation()}>
-        <Button
-          onClick={onOpenPo}
-          size="icon-sm"
-          title="注文書"
-          variant="outline"
-        >
-          <FileText />
-        </Button>
+        {!hidePo && (
+          <Button
+            onClick={onOpenPo}
+            size="icon-sm"
+            title="注文書"
+            variant="outline"
+          >
+            <FileText />
+          </Button>
+        )}
       </TableCell>
       <TableCell onClick={(e) => e.stopPropagation()}>
         <OrderFileCell kind="ack" order={o} />
@@ -1187,6 +1484,7 @@ function OrderPrimaryCells({
   isViewer,
   onFieldSave,
   order: o,
+  onNotesSave,
   onOpenEdit,
   onStatusChange,
   rowState,
@@ -1197,6 +1495,7 @@ function OrderPrimaryCells({
     field: "decided" | "estimate" | "planned",
     value: number | null
   ) => void;
+  onNotesSave: (notes: string) => void;
   order: Order;
   onOpenEdit?: () => void;
   onStatusChange: (status: string) => void;
@@ -1204,6 +1503,14 @@ function OrderPrimaryCells({
 }) {
   return (
     <>
+      {columns.paymentNo && (
+        <TableCell
+          className="whitespace-nowrap tabular-nums"
+          onClick={onOpenEdit}
+        >
+          {o.paymentNo || "-"}
+        </TableCell>
+      )}
       {columns.category && (
         <TableCell
           className="max-w-24 truncate"
@@ -1243,11 +1550,23 @@ function OrderPrimaryCells({
       )}
       {columns.notes && (
         <TableCell
-          className="line-clamp-2 max-w-[220px] whitespace-normal break-words"
-          onClick={onOpenEdit}
+          className="max-w-[220px] whitespace-normal break-words"
+          onClick={
+            isViewer || rowState.locked
+              ? onOpenEdit
+              : (e) => e.stopPropagation()
+          }
           title={o.details ?? ""}
         >
-          {excerptNotes(o.details)}
+          {isViewer || rowState.locked ? (
+            <span className="line-clamp-2">{excerptNotes(o.details)}</span>
+          ) : (
+            <InlineNotesInput
+              className="w-44"
+              onCommit={onNotesSave}
+              value={o.details ?? ""}
+            />
+          )}
         </TableCell>
       )}
       {columns.status && (
@@ -1521,18 +1840,12 @@ function OrderPaymentCell({
   }
   return (
     <TableCell className="max-w-40" onClick={onOpenEdit}>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span className="flex items-center gap-1 rounded border-2 border-destructive bg-destructive/10 px-1.5 py-0.5">
-            <AlertTriangle className="size-4 shrink-0 text-destructive" />
-            <span className="min-w-0 truncate">{payment || "-"}</span>
-          </span>
-        </TooltipTrigger>
-        <TooltipContent>
-          支払条件が発注先マスタ（{mismatchVendorTerm}）と異なります（この発注:{" "}
-          {payment}）
-        </TooltipContent>
-      </Tooltip>
+      <span className="flex items-center gap-1.5 rounded border-2 border-destructive bg-destructive/10 px-1.5 py-0.5">
+        <WarningBadge
+          message={`支払条件が発注先マスタ（${mismatchVendorTerm}）と異なります（この発注: ${payment}）`}
+        />
+        <span className="min-w-0 truncate">{payment || "-"}</span>
+      </span>
     </TableCell>
   );
 }
@@ -1540,6 +1853,7 @@ function OrderPaymentCell({
 /** 「行を追加」で表の末尾に現れる、新規発注をその場で入力するインライン行。 */
 function OrderCreateRow({
   categories,
+  deliveryMonth,
   columns,
   form,
   onCancel,
@@ -1550,6 +1864,7 @@ function OrderCreateRow({
 }: {
   categories: RouterOutputs["categories"]["list"] | undefined;
   columns: ColumnState;
+  deliveryMonth?: string | null;
   form: OrderFormState;
   onCancel: () => void;
   onSave: () => void;
@@ -1568,7 +1883,12 @@ function OrderCreateRow({
   ) =>
     setForm({
       ...form,
-      ...nextPaymentTermFields(closingDay, dueDay, monthOffset),
+      ...nextPaymentTermFields(
+        closingDay,
+        dueDay,
+        monthOffset,
+        deliveryMonth ?? undefined
+      ),
     });
 
   const visibleColumnCount = 3 + Object.values(columns).filter(Boolean).length;
@@ -1597,6 +1917,13 @@ function OrderCreateRow({
                     <SelectValue placeholder="工種" />
                   </SelectTrigger>
                   <SelectContent>
+                    {/* マスタに無い・絞り込みで外れた現在の値も、空欄にならないよう先頭に出す */}
+                    {form.category &&
+                      !categories?.some((c) => c.name === form.category) && (
+                        <SelectItem value={form.category}>
+                          {form.category}
+                        </SelectItem>
+                      )}
                     {categories?.map((c) => (
                       <SelectItem key={c.id} value={c.name}>
                         {c.name}
@@ -1624,6 +1951,12 @@ function OrderCreateRow({
                     <SelectValue placeholder="発注先" />
                   </SelectTrigger>
                   <SelectContent>
+                    {form.vendor &&
+                      !vendorOptions.some((v) => v.company === form.vendor) && (
+                        <SelectItem value={form.vendor}>
+                          {form.vendor}
+                        </SelectItem>
+                      )}
                     {vendorOptions.map((v) => (
                       <SelectItem key={v.id} value={v.company}>
                         {v.company}
@@ -1876,6 +2209,7 @@ function OrderCreateRow({
  */
 function OrderEditRow({
   categories,
+  deliveryMonth,
   columns,
   form,
   onCancel,
@@ -1887,6 +2221,7 @@ function OrderEditRow({
 }: {
   categories: RouterOutputs["categories"]["list"] | undefined;
   columns: ColumnState;
+  deliveryMonth?: string | null;
   form: OrderFormState;
   onCancel: () => void;
   onDelete: () => void;
@@ -1906,7 +2241,12 @@ function OrderEditRow({
   ) =>
     setForm({
       ...form,
-      ...nextPaymentTermFields(closingDay, dueDay, monthOffset),
+      ...nextPaymentTermFields(
+        closingDay,
+        dueDay,
+        monthOffset,
+        deliveryMonth ?? undefined
+      ),
     });
   const visibleColumnCount = 3 + Object.values(columns).filter(Boolean).length;
   const paymentTermParsed = parsePaymentTermLabel(form.payment);
@@ -1934,6 +2274,13 @@ function OrderEditRow({
                     <SelectValue placeholder="工種" />
                   </SelectTrigger>
                   <SelectContent>
+                    {/* マスタに無い・絞り込みで外れた現在の値も、空欄にならないよう先頭に出す */}
+                    {form.category &&
+                      !categories?.some((c) => c.name === form.category) && (
+                        <SelectItem value={form.category}>
+                          {form.category}
+                        </SelectItem>
+                      )}
                     {categories?.map((c) => (
                       <SelectItem key={c.id} value={c.name}>
                         {c.name}
@@ -1961,6 +2308,12 @@ function OrderEditRow({
                     <SelectValue placeholder="発注先" />
                   </SelectTrigger>
                   <SelectContent>
+                    {form.vendor &&
+                      !vendorOptions.some((v) => v.company === form.vendor) && (
+                        <SelectItem value={form.vendor}>
+                          {form.vendor}
+                        </SelectItem>
+                      )}
                     {vendorOptions.map((v) => (
                       <SelectItem key={v.id} value={v.company}>
                         {v.company}
@@ -2217,18 +2570,26 @@ function OrderFileCell({
   order: Order;
 }) {
   const utils = api.useUtils();
-  const fileInputRef = useRef<HTMLInputElement>(null);
+  const { data: me } = api.users.me.useQuery();
+  const readOnly = isReadOnlyRole(me?.role);
   const [previewOpen, setPreviewOpen] = useState(false);
+  const [confirmDelete, setConfirmDelete] = useState(false);
+  const [pendingFile, setPendingFile] = useState<File | null>(null);
+  const [scanOpen, setScanOpen] = useState(false);
+  const [pickOpen, setPickOpen] = useState(false);
+  const [menuOpen, setMenuOpen] = useState(false);
   const hasFile = kind === "invoice" ? order.invoiceHasFile : order.ackHasFile;
   const filename =
     kind === "invoice" ? order.invoiceFilename : order.ackFilename;
+  const kindLabel = ORDER_FILE_KIND_LABEL[kind];
 
   const uploadMutation = api.orders.uploadFile.useMutation({
     onSuccess: async () => {
       await utils.orders.list.invalidate();
+      setPendingFile(null);
       toast.success("アップロードしました");
     },
-    onError: () => toast.error("アップロードに失敗しました"),
+    onError: (err) => toast.error(err.message || "アップロードに失敗しました"),
   });
   const deleteMutation = api.orders.deleteFile.useMutation({
     onSuccess: async () => {
@@ -2239,28 +2600,14 @@ function OrderFileCell({
     onError: () => toast.error("削除に失敗しました"),
   });
 
-  const MAX_SIZE = 3 * 1024 * 1024;
-
-  const onFileSelected = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    e.target.value = "";
-    if (!file) {
-      return;
-    }
-    if (file.type !== "application/pdf") {
-      toast.error("PDFファイルを指定してください");
-      return;
-    }
-    if (file.size > MAX_SIZE) {
-      toast.error("ファイルサイズは3MB以下にしてください");
-      return;
-    }
+  const upload = (file: File, meta: { docAmount: number; docDate: string }) => {
     const reader = new FileReader();
     reader.onload = () => {
       uploadMutation.mutate({
         id: order.id,
         kind,
-        filename: file.name,
+        docAmount: meta.docAmount,
+        docDate: meta.docDate,
         dataUrl: String(reader.result),
       });
     };
@@ -2293,7 +2640,7 @@ function OrderFileCell({
             <DialogFooter>
               <Button
                 disabled={deleteMutation.isPending}
-                onClick={() => deleteMutation.mutate({ id: order.id, kind })}
+                onClick={() => setConfirmDelete(true)}
                 variant="destructive"
               >
                 削除
@@ -2301,38 +2648,112 @@ function OrderFileCell({
             </DialogFooter>
           </DialogContent>
         </Dialog>
+        <AlertDialog onOpenChange={setConfirmDelete} open={confirmDelete}>
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>
+                {kind === "invoice" ? "請求書" : "請書"}を削除しますか？
+              </AlertDialogTitle>
+              <AlertDialogDescription>
+                {filename} を削除します。この操作は取り消せません。
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>キャンセル</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => deleteMutation.mutate({ id: order.id, kind })}
+              >
+                削除する
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        </AlertDialog>
       </>
     );
   }
 
   return (
-    <div className="flex items-center gap-1">
-      <input
-        accept="application/pdf"
-        className="hidden"
-        onChange={onFileSelected}
-        ref={fileInputRef}
-        type="file"
+    <FileDropArea
+      className="-m-2 min-h-12 w-[calc(100%+1rem)] gap-1 p-2"
+      disabled={readOnly}
+      onFile={setPendingFile}
+    >
+      <Popover onOpenChange={setMenuOpen} open={menuOpen}>
+        <PopoverTrigger asChild>
+          <Button
+            disabled={readOnly}
+            size="icon-sm"
+            title={`${kindLabel}をアップロード（PDFをここにドロップもできます）`}
+            variant="ghost"
+          >
+            <Upload />
+            <span className="sr-only">{kindLabel}をアップロード</span>
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent align="start" className="w-56 p-1">
+          <button
+            className="flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm hover:bg-accent"
+            onClick={() => {
+              setMenuOpen(false);
+              setPickOpen(true);
+            }}
+            type="button"
+          >
+            <FileText className="size-4" />
+            書類（PDF）を選ぶ
+          </button>
+          <button
+            className="flex w-full items-center gap-2 rounded px-3 py-2 text-left text-sm hover:bg-accent"
+            onClick={() => {
+              setMenuOpen(false);
+              setScanOpen(true);
+            }}
+            type="button"
+          >
+            <Camera className="size-4" />
+            写真を撮ってPDF化
+          </button>
+        </PopoverContent>
+      </Popover>
+      <ScanToPdfDialog
+        onComplete={setPendingFile}
+        onOpenChange={setScanOpen}
+        open={scanOpen}
       />
-      <Button
-        onClick={() => fileInputRef.current?.click()}
-        size="icon-sm"
-        title={`${kind === "invoice" ? "請求書" : "請書"}をアップロード`}
-        variant="ghost"
-      >
-        <Upload />
-      </Button>
-      <Tooltip>
-        <TooltipTrigger asChild>
-          <span className="text-amber-600 dark:text-amber-400">
-            <AlertTriangle className="size-4" />
-          </span>
-        </TooltipTrigger>
-        <TooltipContent>
-          {kind === "invoice" ? "請求書" : "請書"}が未アップロードです
-        </TooltipContent>
-      </Tooltip>
-    </div>
+      <Dialog onOpenChange={setPickOpen} open={pickOpen}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>{kindLabel}をアップロード</DialogTitle>
+          </DialogHeader>
+          <FileDropzone
+            className="flex min-h-40 w-full flex-col justify-center gap-2 rounded-lg border-2 border-muted-foreground/40 border-dashed p-6 text-center text-muted-foreground text-sm focus-within:outline-transparent hover:bg-accent"
+            onFile={(file) => {
+              setPickOpen(false);
+              setPendingFile(file);
+            }}
+          >
+            <Upload className="mx-auto size-6" />
+            <span>ここにPDFをドロップ</span>
+            <span className="text-xs">
+              またはクリックしてファイルを選択（3MBまで）
+            </span>
+          </FileDropzone>
+        </DialogContent>
+      </Dialog>
+      {pendingFile && (
+        <OrderFileMetaDialog
+          defaultAmount={order.decided}
+          kindLabel={kindLabel}
+          onCancel={() => setPendingFile(null)}
+          onConfirm={(meta) => upload(pendingFile, meta)}
+          pending={uploadMutation.isPending}
+          vendor={order.vendor}
+        />
+      )}
+      <WarningBadge
+        message={`${kind === "invoice" ? "請求書" : "請書"}が未アップロードです`}
+      />
+    </FileDropArea>
   );
 }
 
@@ -2352,10 +2773,11 @@ function PoPreviewPane({
   orderNo: string | null;
 }) {
   const [loaded, setLoaded] = useState(false);
-  const src = `/api/po/${orderId}?inline=1&v=${orderNo || "pending"}`;
+  // サムネイル一覧を閉じ、幅に合わせて表示する（既定だと左のサムネイルに幅を取られ、ページが小さく見える）
+  const src = `/api/po/${orderId}?inline=1&v=${orderNo || "pending"}#navpanes=0&pagemode=none&view=FitH`;
 
   return (
-    <div className="relative h-[70vh] min-h-[420px] overflow-hidden rounded-md border bg-muted/30">
+    <div className="relative h-[80vh] min-h-[480px] overflow-hidden rounded-md border bg-muted/30">
       {/* biome-ignore lint/a11y/noNoninteractiveElementInteractions: onLoad on an iframe is not an interactivity/a11y concern */}
       <iframe
         className="h-full w-full"
@@ -2392,13 +2814,15 @@ function PurchaseOrderModal({
     cc: [],
     to: [],
   });
-  const [emailSubject, setEmailSubject] = useState(
-    `【${project?.name ?? ""}】注文書のご案内`
-  );
-  const [emailBody, setEmailBody] = useState(
-    "いつもお世話になっております。\n注文書を添付いたします。ご確認のほどよろしくお願いいたします。"
-  );
-  const [attachAckFormat, setAttachAckFormat] = useState(false);
+  // 注文書と注文請書（Excel様式）をセットで送るのが既定。件名・本文はテンプレートから入る
+  const poTemplate = purchaseOrderMailTemplate({
+    contactName: matchedVendor?.contact,
+    projectName: project?.name ?? "",
+    vendorName: order.vendor ?? "",
+    workName: order.category,
+  });
+  const [emailSubject, setEmailSubject] = useState(poTemplate.subject);
+  const [emailBody, setEmailBody] = useState(poTemplate.body);
   const [sending, setSending] = useState(false);
 
   const ensureOrderNoMutation = api.orders.ensureOrderNo.useMutation({
@@ -2465,7 +2889,6 @@ function PurchaseOrderModal({
           cc: recipients.cc,
           subject: emailSubject,
           body: emailBody,
-          attachAckFormat,
         }),
       });
       const data = (await res.json()) as { error?: string };
@@ -2485,79 +2908,89 @@ function PurchaseOrderModal({
 
   return (
     <Dialog onOpenChange={onClose} open>
-      <DialogContent className="max-h-[90vh] max-w-3xl overflow-y-auto">
-        <DialogHeader>
+      <DialogContent className="flex max-h-[92vh] flex-col gap-0 overflow-hidden p-0 sm:max-w-6xl">
+        <DialogHeader className="px-6 pt-6 pb-3">
           <DialogTitle>注文書プレビュー</DialogTitle>
         </DialogHeader>
-        <PoPreviewPane orderId={order.id} orderNo={orderNo} />
-        {vendorBankStatus === "missing" && (
-          <Alert variant="destructive">
-            <AlertDescription>
-              「{order.vendor}
-              」の口座番号が発注先マスタに未登録のため、注文書のダウンロード・メール送信ができません。発注先マスタで口座番号を登録してください。
-            </AlertDescription>
-          </Alert>
-        )}
-        {showEmailForm ? (
-          <div className="flex flex-col gap-3 rounded-md border p-4">
-            <div className="flex items-center justify-between">
-              <p className="font-medium text-sm">発注確定メール送信</p>
-              <Button
-                onClick={() => setShowEmailForm(false)}
-                size="icon"
-                variant="ghost"
-              >
-                <X className="size-4" />
-              </Button>
+        <div className="min-h-0 flex-1 overflow-y-auto px-6 py-3">
+          <div className="grid items-start gap-4 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1.2fr)]">
+            <div className="flex min-w-0 flex-col gap-3">
+              <div className="rounded-md border bg-muted/30 p-3 text-sm">
+                <p className="font-medium">{order.vendor || "-"}</p>
+                <p className="text-muted-foreground text-xs">
+                  {project?.name ?? "-"}
+                  {order.orderNo ? `　工事ID：${order.orderNo}` : ""}
+                </p>
+              </div>
+              {vendorBankStatus === "missing" && (
+                <Alert variant="destructive">
+                  <AlertDescription>
+                    「{order.vendor}
+                    」の口座番号が発注先マスタに未登録のため、注文書のダウンロード・メール送信ができません。発注先マスタで口座番号を登録してください。
+                  </AlertDescription>
+                </Alert>
+              )}
+              {showEmailForm ? (
+                <div className="flex flex-col gap-3 rounded-md border p-4">
+                  <div className="flex items-center justify-between">
+                    <p className="font-medium text-sm">発注確定メール送信</p>
+                    <Button
+                      onClick={() => setShowEmailForm(false)}
+                      size="icon"
+                      variant="ghost"
+                    >
+                      <X className="size-4" />
+                    </Button>
+                  </div>
+                  <EmailRecipientsFields
+                    ccOptions={matchedVendor?.ccContacts ?? EMPTY_CONTACTS}
+                    fallbackTo={matchedVendor?.email}
+                    onChange={setRecipients}
+                    toOptions={matchedVendor?.toContacts ?? EMPTY_CONTACTS}
+                  />
+                  <Input
+                    onChange={(e) => setEmailSubject(e.target.value)}
+                    placeholder="件名"
+                    value={emailSubject}
+                  />
+                  <Textarea
+                    onChange={(e) => setEmailBody(e.target.value)}
+                    value={emailBody}
+                  />
+                  <p className="text-muted-foreground text-xs">
+                    添付: 注文書・注文請書（2ページのPDF）
+                  </p>
+                  <MailSignaturePreview />
+                  <Button
+                    disabled={sending || vendorBankBlocked}
+                    onClick={sendEmail}
+                  >
+                    <Send data-icon="inline-start" />
+                    送信
+                  </Button>
+                </div>
+              ) : (
+                <div className="flex flex-wrap gap-2">
+                  <Button
+                    disabled={vendorBankBlocked}
+                    onClick={() => setShowEmailForm(true)}
+                    variant="outline"
+                  >
+                    <Send data-icon="inline-start" />
+                    メール送信
+                  </Button>
+                  <Button disabled={vendorBankBlocked} onClick={download}>
+                    <FileText data-icon="inline-start" />
+                    ダウンロード
+                  </Button>
+                </div>
+              )}
             </div>
-            <EmailRecipientsFields
-              ccOptions={matchedVendor?.ccContacts ?? EMPTY_CONTACTS}
-              onChange={setRecipients}
-              toOptions={matchedVendor?.toContacts ?? EMPTY_CONTACTS}
-            />
-            <Input
-              onChange={(e) => setEmailSubject(e.target.value)}
-              placeholder="件名"
-              value={emailSubject}
-            />
-            <Textarea
-              onChange={(e) => setEmailBody(e.target.value)}
-              value={emailBody}
-            />
-            <label
-              className="flex items-center gap-2 text-sm"
-              htmlFor="po-attach-ack"
-            >
-              <Checkbox
-                checked={attachAckFormat}
-                id="po-attach-ack"
-                onCheckedChange={(checked) =>
-                  setAttachAckFormat(checked === true)
-                }
-              />
-              請書フォーマットを添付する
-            </label>
-            <Button disabled={sending || vendorBankBlocked} onClick={sendEmail}>
-              <Send data-icon="inline-start" />
-              送信
-            </Button>
+            <div className="lg:sticky lg:top-0">
+              <PoPreviewPane orderId={order.id} orderNo={orderNo} />
+            </div>
           </div>
-        ) : (
-          <DialogFooter>
-            <Button
-              disabled={vendorBankBlocked}
-              onClick={() => setShowEmailForm(true)}
-              variant="outline"
-            >
-              <Send data-icon="inline-start" />
-              メール送信
-            </Button>
-            <Button disabled={vendorBankBlocked} onClick={download}>
-              <FileText data-icon="inline-start" />
-              ダウンロード
-            </Button>
-          </DialogFooter>
-        )}
+        </div>
       </DialogContent>
     </Dialog>
   );

@@ -2,18 +2,15 @@ import crypto from "node:crypto";
 import { TRPCError } from "@trpc/server";
 import { and, desc, eq, isNull, lt } from "drizzle-orm";
 import { z } from "zod";
+import { ROLE_LABELS, ROLES } from "~/lib/roles";
 import { adminProcedure, createTRPCRouter } from "~/server/api/trpc";
 import { logAudit } from "~/server/audit/log";
 import { db } from "~/server/db";
 import { invitations, users } from "~/server/db/schema";
 import { MAIL_FROM, makeTransporter } from "~/server/email/transporter";
 
-const INVITE_ROLE_LABELS: Record<string, string> = {
-  admin: "管理者",
-  accounting: "経理部",
-  staff: "一般社員",
-};
-const VALID_ROLES = new Set(Object.keys(INVITE_ROLE_LABELS));
+const INVITE_ROLE_LABELS: Record<string, string> = ROLE_LABELS;
+const VALID_ROLES = new Set<string>(ROLES);
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const INVITE_TTL_MS = 24 * 60 * 60 * 1000;
 const INVITATION_LIST_LIMIT = 50;
@@ -121,7 +118,7 @@ export const invitationsRouter = createTRPCRouter({
           text: `${input.name || "ご担当者"} 様
 
 お世話になっております。株式会社WIN WINでございます。
-このたび、業務管理システムのアカウントを発行いたしましたのでご案内申し上げます。
+このたび、物件管理システムのアカウントを発行いたしましたのでご案内申し上げます。
 
 　権限：${INVITE_ROLE_LABELS[input.role]}
 

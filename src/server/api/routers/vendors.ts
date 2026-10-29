@@ -1,14 +1,15 @@
 import { TRPCError } from "@trpc/server";
-import { eq, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { type EmailContact, MAX_CONTACTS } from "~/lib/contacts";
 import {
   PAYMENT_CLOSING_DAYS,
-  PAYMENT_DUE_DAYS,
+  PAYMENT_DUE_DAY_CHOICES,
   PAYMENT_DUE_MONTH_OFFSETS,
   paymentTermLabel,
 } from "~/lib/payment-term";
 import {
+  accountingOrAdminProcedure,
   adminProcedure,
   createTRPCRouter,
   masterReadableProcedure,
@@ -121,7 +122,7 @@ const vendorUpsertShape = {
   bankNumber: z.string().nullish(),
   bankHolder: z.string().nullish(),
   paymentClosingDay: z.enum(PAYMENT_CLOSING_DAYS).nullish(),
-  paymentDueDay: z.enum(PAYMENT_DUE_DAYS).nullish(),
+  paymentDueDay: z.enum(PAYMENT_DUE_DAY_CHOICES).nullish(),
   paymentDueMonthOffset: z.enum(PAYMENT_DUE_MONTH_OFFSETS).nullish(),
   capital: z.number().nullish(),
   companyScale: z.string().nullish(),
@@ -140,14 +141,14 @@ export const vendorsRouter = createTRPCRouter({
     return rows.map(maskVendorBank);
   }),
 
-  // 編集画面用：口座番号を含む全項目を返す（一覧はマスク済みのため、編集時はここから取得する）。
-  // 発注先の編集はadmin専用のため、getByIdもadmin専用に据え置く
-  // （口座番号などの非マスク情報を他ロールに開放しないため）。
-  getById: adminProcedure
+  // 編集画面・支払管理（振込先口座の取得）用：口座番号を含む全項目を返す
+  // （一覧はマスク済みのため、必要時はここから取得する）。口座番号などの非マスク
+  // 情報を閲覧専用(viewer)・一般社員(staff)に開放しないため、admin/accounting限定。
+  getById: accountingOrAdminProcedure
     .input(z.object({ id: z.string() }))
     .query(async ({ input }) => {
       const row = await db.query.vendors.findFirst({
-        where: eq(vendors.id, input.id),
+        where: and(eq(vendors.id, input.id), isNull(vendors.deletedAt)),
       });
       if (!row) {
         throw new TRPCError({
