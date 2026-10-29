@@ -23,7 +23,9 @@ export function useZipCodeLookup(onFound: (address: string) => void) {
       const res = await fetch(`/api/zipcode?zip=${zip}`);
       const data = (await res.json()) as { address?: string; error?: string };
       if (!res.ok) {
-        toast.error(data.error ?? "住所の検索に失敗しました");
+        toast.error(
+          data.error ?? "住所の検索に失敗しました。住所を手入力してください"
+        );
         return;
       }
       if (!data.address) {
@@ -32,7 +34,7 @@ export function useZipCodeLookup(onFound: (address: string) => void) {
       }
       onFound(data.address);
     } catch {
-      toast.error("住所の検索に失敗しました");
+      toast.error("住所の検索に失敗しました。住所を手入力してください");
     } finally {
       setLookingUp(false);
     }

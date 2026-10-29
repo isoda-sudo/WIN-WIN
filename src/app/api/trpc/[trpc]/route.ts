@@ -6,6 +6,11 @@ import { appRouter } from "~/server/api/root";
 import { createTRPCContext } from "~/server/api/trpc";
 
 /**
+ * 一覧などの取得が固まったとき、既定の300秒まで待たずに30秒で打ち切る（接続を解放し、再読み込みで復帰できるようにする）。
+ */
+export const maxDuration = 30;
+
+/**
  * This wraps the `createTRPCContext` helper and provides the required context for the tRPC API when
  * handling a HTTP request (e.g. when you make requests from Client Components).
  */

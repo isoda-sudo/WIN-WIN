@@ -4,6 +4,7 @@
 // 計算できるようになった。
 
 import { isHoliday } from "japanese-holidays";
+import { jstDateParts } from "~/lib/fiscal-period";
 
 // 年末年始休業（法律上の祝日ではないが、実務上の休業日として扱う）。
 // 「1月5日が日曜日」のようなレアケース（前営業日繰上げがさらに連休と重なる等）
@@ -14,6 +15,7 @@ const NEW_YEAR_END_MONTH = 1;
 const NEW_YEAR_END_DAY = 3;
 const SUNDAY = 0;
 const SATURDAY = 6;
+const ANCHOR_YM_RE = /^(\d{4})-(0[1-9]|1[0-2])/;
 
 function isYearEndNewYearHoliday(date: Date): boolean {
   const month = date.getMonth() + 1;
@@ -53,7 +55,8 @@ const DEFAULT_CLOSING_DAY: PaymentClosingDay = "末";
 
 export const PAYMENT_DUE_DAYS = ["5", "10", "15", "20", "25", "末"] as const;
 export type PaymentDueDay = (typeof PAYMENT_DUE_DAYS)[number];
-const DEFAULT_DUE_DAY: PaymentDueDay = "末";
+// 新規に使う既定は「引渡月末締・翌々月5日払い」（D-07/D-13）。
+const DEFAULT_DUE_DAY: PaymentDueDay = "5";
 
 // 発注先マスタ・工事計画・支払管理の各画面で新規に選択できる支払日は
 // 「5日」「15日」「末日」の3種類のみ（旧データの10日/20日/25日払いは
@@ -71,7 +74,7 @@ export function withCurrentValue<T extends string>(
 // 支払月（起算月から何ヶ月後に払うか）: "1"=翌月払い、"2"=翌々月払い
 export const PAYMENT_DUE_MONTH_OFFSETS = ["1", "2"] as const;
 export type PaymentDueMonthOffset = (typeof PAYMENT_DUE_MONTH_OFFSETS)[number];
-const DEFAULT_DUE_MONTH_OFFSET: PaymentDueMonthOffset = "1";
+const DEFAULT_DUE_MONTH_OFFSET: PaymentDueMonthOffset = "2";
 
 function normalizeClosingDay(
   value: string | null | undefined
@@ -97,7 +100,7 @@ function normalizeDueMonthOffset(
 
 /**
  * 締め日・支払日から表示用ラベルを組み立てる（例: "末","末" → "月末締翌月末払い"）。
- * monthOffsetを省略すると翌月払い（従来通り）になる。
+ * monthOffsetを省略すると既定（翌々月払い）になる。
  */
 export function paymentTermLabel(
   closingDay: string | null | undefined,
@@ -134,7 +137,7 @@ function rawPaymentTermLabel(
  * 既存の支払条件をプルダウンの初期値に変換するために使う）。締め日は常に
  * 月末締め固定として返す（旧データのラベルでも支払月・支払日だけは正しく
  * 復元し、締め日は自動的に月末締めへ揃える）。一致しない場合は既定値
- * （月末締め/翌月/月末払い）を返す。
+ * （月末締め/翌々月/5日払い）を返す。
  */
 export function parsePaymentTermLabel(label: string | null | undefined): {
   closingDay: PaymentClosingDay;
@@ -170,8 +173,31 @@ function toIsoDate(d: Date): string {
 }
 
 /**
+ * 起算日（締め月）の年・月(0始まり)を日本時間で求める。Dateはサーバー（UTC）と
+ * ブラウザでローカルTZが異なるため getFullYear/getMonth は使わない。
+ * 文字列の場合は案件の引渡月 "YYYY-MM"（または "YYYY-MM-DD"）として解釈する。
+ */
+function anchorYearMonth0(anchor: Date | string): {
+  month0: number;
+  year: number;
+} {
+  if (typeof anchor === "string") {
+    const m = ANCHOR_YM_RE.exec(anchor);
+    if (m) {
+      return { month0: Number(m[2]) - 1, year: Number(m[1]) };
+    }
+    const { month, year } = jstDateParts(new Date());
+    return { month0: month - 1, year };
+  }
+  const { month, year } = jstDateParts(anchor);
+  return { month0: month - 1, year };
+}
+
+/**
  * 締め日・支払日（発注先マスタの登録値）と起算日から支払期日を計算する。
- * 締め日は常に月末締めとして扱う。monthOffsetを省略すると翌月払い（従来通り）になる。
+ * 起算日は案件の引渡月（締め＝引渡月末）。"YYYY-MM" 文字列またはDateを渡す
+ * （Dateの場合は日本時間の年月で判定）。省略時は本日（JST）。
+ * 締め日は常に月末締めとして扱う。monthOffsetを省略すると既定（翌々月払い）になる。
  * 計算結果が土日・祝日・年末年始（12/29〜1/3）にあたる場合は、直前の
  * 営業日まで自動的に繰り上げる（「1月5日が日曜日」のような繰上げ後も
  * 別の休日に重なるレアケースは対象外とし、手動運用で調整する）。
@@ -182,7 +208,7 @@ function toIsoDate(d: Date): string {
 export function calcPaymentDueDate(
   closingDay: string | null | undefined,
   dueDay: string | null | undefined,
-  anchor: Date = new Date(),
+  anchor: Date | string = new Date(),
   monthOffset?: string | null
 ): string | null {
   if (!(closingDay && dueDay)) {
@@ -191,8 +217,7 @@ export function calcPaymentDueDate(
   const due = normalizeDueDay(dueDay);
   const offset = normalizeDueMonthOffset(monthOffset);
 
-  const year = anchor.getFullYear();
-  const closingMonth0 = anchor.getMonth();
+  const { month0: closingMonth0, year } = anchorYearMonth0(anchor);
   const dueMonth0 = closingMonth0 + Number(offset);
 
   const rawDueDate =
@@ -205,17 +230,18 @@ export function calcPaymentDueDate(
 
 /**
  * 支払条件（締め日・支払月・支払日）のプルダウンを変更した際に、表示ラベルと
- * 支払期日を併せて組み立てる。起算日は「本日」（発注先マスタ選択時の自動計算
- * と同じ基準）。工事計画詳細・支払管理の両方から共通で利用する。
+ * 支払期日を併せて組み立てる。起算日 anchor は案件の引渡月（"YYYY-MM"）または
+ * Date。省略時は本日（JST）。工事計画詳細・支払管理の両方から共通で利用する。
  */
 export function nextPaymentTermFields(
   closingDay: string,
   dueDay: string,
-  monthOffset: string
+  monthOffset: string,
+  anchor: Date | string = new Date()
 ): { payment: string; paymentDate: string } {
   return {
     payment: paymentTermLabel(closingDay, dueDay, monthOffset),
     paymentDate:
-      calcPaymentDueDate(closingDay, dueDay, new Date(), monthOffset) ?? "",
+      calcPaymentDueDate(closingDay, dueDay, anchor, monthOffset) ?? "",
   };
 }

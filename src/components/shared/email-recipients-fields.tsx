@@ -2,11 +2,16 @@
 
 import { Plus, X } from "lucide-react";
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
+import { z } from "zod";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
-import type { EmailContact } from "~/lib/contacts";
+import { type EmailContact, MAX_CONTACTS } from "~/lib/contacts";
+import { api } from "~/trpc/react";
+
+const emailSchema = z.string().email();
 
 function contactLabel(email: string, options: EmailContact[]): string {
   const match = options.find((c) => c.email === email);
@@ -14,6 +19,31 @@ function contactLabel(email: string, options: EmailContact[]): string {
     return email;
   }
   return `${match.name}${match.title ? `（${match.title}）` : ""} - ${match.email}`;
+}
+
+/** CCの初期値: マスタ登録のCC関係者＋管理者・経理。宛先（TO）と重複するものは除き、上限を超えない。 */
+function defaultCc(
+  ccOptions: EmailContact[],
+  staffEmails: readonly string[] | undefined,
+  to: readonly string[]
+): string[] {
+  const all = [...ccOptions.map((c) => c.email), ...(staffEmails ?? [])].filter(
+    Boolean
+  );
+  return [...new Set(all)]
+    .filter((e) => !to.includes(e))
+    .slice(0, MAX_CONTACTS);
+}
+
+function defaultTo(
+  toOptions: EmailContact[],
+  fallbackTo: string | null | undefined
+): string[] {
+  const list = toOptions.map((c) => c.email).filter(Boolean);
+  if (list.length === 0 && fallbackTo?.trim()) {
+    return [fallbackTo.trim()];
+  }
+  return list;
 }
 
 /**
@@ -24,47 +54,67 @@ function contactLabel(email: string, options: EmailContact[]): string {
  */
 export function EmailRecipientsFields({
   ccOptions,
+  fallbackTo,
   onChange,
   toOptions,
 }: {
   ccOptions: EmailContact[];
+  /** TO担当者が未登録のときの既定宛先（顧客・発注先の代表メール）。 */
+  fallbackTo?: string | null;
   onChange: (recipients: { cc: string[]; to: string[] }) => void;
   toOptions: EmailContact[];
 }) {
   const [to, setTo] = useState<string[]>(() =>
-    toOptions.map((c) => c.email).filter(Boolean)
+    defaultTo(toOptions, fallbackTo)
   );
+  // CCの初期値は、顧客・発注先のCC関係者に加えて、全ての管理者と経理のアドレス（画面で外せる）
+  const { data: staffCc } = api.users.ccDefaults.useQuery(undefined, {
+    staleTime: 5 * 60_000,
+  });
   const [cc, setCc] = useState<string[]>(() =>
-    ccOptions.map((c) => c.email).filter(Boolean)
+    defaultCc(ccOptions, undefined, defaultTo(toOptions, fallbackTo))
   );
   const [newTo, setNewTo] = useState("");
   const [newCc, setNewCc] = useState("");
 
   useEffect(() => {
-    setTo(toOptions.map((c) => c.email).filter(Boolean));
-  }, [toOptions]);
+    setTo(defaultTo(toOptions, fallbackTo));
+  }, [toOptions, fallbackTo]);
   useEffect(() => {
-    setCc(ccOptions.map((c) => c.email).filter(Boolean));
-  }, [ccOptions]);
+    setCc(defaultCc(ccOptions, staffCc, defaultTo(toOptions, fallbackTo)));
+  }, [ccOptions, staffCc, toOptions, fallbackTo]);
 
   useEffect(() => {
     onChange({ cc, to });
   }, [to, cc, onChange]);
 
-  const addTo = () => {
-    const email = newTo.trim();
-    if (email && !to.includes(email)) {
-      setTo([...to, email]);
+  const addRecipient = (
+    raw: string,
+    list: string[],
+    setList: (v: string[]) => void,
+    clear: () => void
+  ) => {
+    const email = raw.trim();
+    if (!email) {
+      return;
     }
-    setNewTo("");
-  };
-  const addCc = () => {
-    const email = newCc.trim();
-    if (email && !cc.includes(email)) {
-      setCc([...cc, email]);
+    if (!emailSchema.safeParse(email).success) {
+      toast.error("メールアドレスの形式が正しくありません");
+      return;
     }
-    setNewCc("");
+    if (list.includes(email)) {
+      clear();
+      return;
+    }
+    if (list.length >= MAX_CONTACTS) {
+      toast.error(`宛先は最大${MAX_CONTACTS}件までです`);
+      return;
+    }
+    setList([...list, email]);
+    clear();
   };
+  const addTo = () => addRecipient(newTo, to, setTo, () => setNewTo(""));
+  const addCc = () => addRecipient(newCc, cc, setCc, () => setNewCc(""));
 
   return (
     <div className="flex flex-col gap-3">

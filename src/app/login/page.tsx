@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Alert, AlertDescription } from "~/components/ui/alert";
 import { Button } from "~/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
@@ -13,6 +13,13 @@ export default function LoginPage() {
   const router = useRouter();
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+
+  const [idleNotice, setIdleNotice] = useState(false);
+  useEffect(() => {
+    setIdleNotice(
+      new URLSearchParams(window.location.search).get("reason") === "idle"
+    );
+  }, []);
 
   const [loginEmail, setLoginEmail] = useState("");
   const [loginPassword, setLoginPassword] = useState("");
@@ -27,12 +34,12 @@ export default function LoginPage() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ email: loginEmail, password: loginPassword }),
       });
-      const data = (await res.json()) as { error?: string };
+      const data = (await res.json()) as { error?: string; next?: string };
       if (!res.ok) {
         setError(data.error ?? "ログインに失敗しました");
         return;
       }
-      router.push("/projects");
+      router.push(data.next ?? "/projects");
       router.refresh();
     } catch {
       setError("エラーが発生しました");
@@ -45,16 +52,25 @@ export default function LoginPage() {
     <div className="flex min-h-dvh items-center justify-center bg-muted/30 p-4">
       <Card className="w-full max-w-sm">
         <CardHeader>
-          <CardTitle className="text-center text-xl">construct-pro</CardTitle>
+          <CardTitle className="text-center text-xl">
+            物件管理システム
+          </CardTitle>
         </CardHeader>
         <CardContent>
+          {idleNotice && (
+            <Alert className="mb-4">
+              <AlertDescription>
+                1時間操作がなかったため、自動でログアウトしました。もう一度ログインしてください。
+              </AlertDescription>
+            </Alert>
+          )}
           <form className="flex flex-col gap-4" onSubmit={onLogin}>
             <div className="flex flex-col gap-2">
               <Label htmlFor="login-email">メールアドレス</Label>
               <Input
                 id="login-email"
                 onChange={(e) => setLoginEmail(e.target.value)}
-                placeholder="admin@example.com"
+                placeholder="name@company.co.jp"
                 required
                 type="email"
                 value={loginEmail}

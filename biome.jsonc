@@ -7,7 +7,7 @@
   ],
   "files": {
     "ignoreUnknown": true,
-    "includes": ["!.agents/skills/**/*.md"]
+    "includes": ["!.agents/skills/**/*.md", "!!scripts/demo"]
   },
   "linter": {
     "rules": {

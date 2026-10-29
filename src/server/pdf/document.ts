@@ -1,7 +1,14 @@
+import path from "node:path";
 import PDFDocument from "pdfkit";
+import { calcInvoiceTax } from "~/lib/invoice-tax";
 import type { orders, projects } from "~/server/db/schema";
 import { COMPANY, fmtDateJa } from "./company";
 import { useJpFont } from "./font";
+import {
+  DEFAULT_INVOICE_BANK,
+  type InvoiceBank,
+  resolveInvoiceBank,
+} from "./invoice-bank";
 
 type OrderRow = typeof orders.$inferSelect;
 type ProjectRow = typeof projects.$inferSelect;
@@ -24,40 +31,54 @@ interface LineItem {
 }
 
 type DocumentKind = "invoice" | "estimate";
-export type InvoiceVariant = "sealed" | "unsealed" | "copy";
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000;
 const DUE_DAYS = 30;
-const L = 50;
-const R = 545;
+const PT_PER_MM = 72 / 25.4;
+
+// A4印刷のレイアウト定数（pt）。下余白は12mm確保し、本文が下端に触れないようにする（大きすぎるとの指摘で20mmから縮小）。
+const PAGE_MARGIN_TOP = 26;
+const PAGE_MARGIN_SIDE = 34;
+const PAGE_MARGIN_BOTTOM = Math.ceil(12 * PT_PER_MM);
+const A4_HEIGHT = 841.89;
+/** 描画してよい最下端のy座標（これより下には何も描かない） */
+export const CONTENT_BOTTOM_Y = A4_HEIGHT - PAGE_MARGIN_BOTTOM;
+export const BOTTOM_MARGIN_PT = PAGE_MARGIN_BOTTOM;
+
+// フォント階層: 見出し > 小見出し > 本文(9〜10pt) > 注記
+const FONT_TITLE = 22;
+const FONT_TOTAL = 18;
+const FONT_CLIENT = 13;
+const FONT_HEADING = 10;
+const FONT_BODY = 10;
+const FONT_NOTE = 8;
+const FONT_RIGHT = 10.5;
+const FONT_RIGHT_NAME = 13;
+
+const L = 34;
+const R = 561;
 const W = R - L;
 const GRAY = "#6b7280";
+const GRAY_DARK = "#374151";
 const ACCENT = "#7030A0"; // Excelテンプレの紫
 
-/** ダミーの電子印（角印）。社名と押印日（発行日＝本日付）を入れる */
-export function drawDummySeal(
+const SEAL_IMAGE_PATH = path.join(process.cwd(), "assets", "company-seal.png");
+const SEAL_SIZE = 64;
+
+/** 社印（角印）の画像（assets/company-seal.png）を、中心 (cx, cy) に描く。 */
+export function drawCompanySeal(
   doc: PDFKit.PDFDocument,
   cx: number,
-  cy: number,
-  date: Date | null
+  cy: number
 ): void {
-  const size = 54;
-  const x = cx - size / 2;
-  const y = cy - size / 2;
-  doc.lineWidth(1.8).strokeColor("#c0392b").rect(x, y, size, size).stroke();
-  doc
-    .lineWidth(0.6)
-    .rect(x + 4, y + 4, size - 8, size - 8)
-    .stroke();
-  doc.fillColor("#c0392b");
-  doc.fontSize(9).text("株式会社", x, y + 10, { width: size, align: "center" });
-  doc.fontSize(9).text("WIN WIN", x, y + 22, { width: size, align: "center" });
-  const d = date || new Date();
-  const dateStr = `${d.getFullYear()}.${String(d.getMonth() + 1).padStart(2, "0")}.${String(d.getDate()).padStart(2, "0")}`;
-  doc
-    .fontSize(7)
-    .text(dateStr, x, y + size - 17, { width: size, align: "center" });
-  doc.fillColor("#000");
+  try {
+    doc.image(SEAL_IMAGE_PATH, cx - SEAL_SIZE / 2, cy - SEAL_SIZE / 2, {
+      width: SEAL_SIZE,
+    });
+  } catch (err) {
+    // 画像が読めなくても帳票の出力は止めない（社印だけ省く）
+    console.error("company seal load failed", err);
+  }
 }
 
 // 工事の品目別内訳は出さず、品名＝案件名・金額＝総額の1行のみを表示する（議事録決定事項）
@@ -82,10 +103,11 @@ function computeLineItems(
     });
   }
   const amt = (o: OrderRow) =>
-    isInvoice
-      ? Number(o.decided) || 0
-      : Number(o.estimate) || Number(o.planned) || Number(o.decided) || 0;
-  const total = orderRows.reduce((s, o) => s + amt(o), 0);
+    Number(o.estimate) || Number(o.planned) || Number(o.decided) || 0;
+  // 請求書の既定金額は契約金額（projects.amount）。見積書は発注の見積額から。
+  const total = isInvoice
+    ? Number(project.amount) || 0
+    : orderRows.reduce((s, o) => s + amt(o), 0);
   return [
     {
       name: project.name || "一式",
@@ -101,11 +123,9 @@ function computeLineItems(
 interface HeaderParams {
   isInvoice: boolean;
   no: string;
-  now: Date;
   orderRows: OrderRow[];
   project: ProjectRow;
   title: string;
-  variant: InvoiceVariant;
 }
 
 function toDateOnly(d: Date): string {
@@ -144,11 +164,11 @@ function aggregatePeriod(orderRows: OrderRow[]): string | null {
 /** タイトル・宛先・自社情報・電子印・件名リードを描画し、続きの描画開始y座標を返す */
 function drawDocumentHeader(
   doc: PDFKit.PDFDocument,
-  { isInvoice, no, now, orderRows, project, title, variant }: HeaderParams
+  { isInvoice, no, orderRows, project, title }: HeaderParams
 ): number {
   const pageW = doc.page.width;
-  let y = 50;
-  doc.fillColor(ACCENT).fontSize(22).text(title, 0, y, {
+  let y = 28;
+  doc.fillColor(ACCENT).fontSize(FONT_TITLE).text(title, 0, y, {
     align: "center",
     characterSpacing: 8,
     width: pageW,
@@ -162,7 +182,7 @@ function drawDocumentHeader(
   doc.fillColor("#000");
   y += 54;
   const client = `${project.clientCompany || project.client || ""}　御中`;
-  doc.fontSize(13).text(client, L, y);
+  doc.fontSize(FONT_CLIENT).text(client, L, y);
   doc
     .moveTo(L, y + 20)
     .lineTo(L + Math.max(doc.widthOfString(client), 170), y + 20)
@@ -170,54 +190,48 @@ function drawDocumentHeader(
     .strokeColor("#000")
     .stroke();
 
-  let ry = y - 6;
+  // 右上の発行者ブロック。文字は大きめ・行間は広めにして、読み取りやすくする
+  const RIGHT_W = 320;
+  const RIGHT_X = R - RIGHT_W;
+  let ry = y - 10;
   doc
-    .fontSize(8)
+    .fontSize(FONT_RIGHT)
     .fillColor("#000")
-    .text((isInvoice ? "請求№　" : "見積№　") + no, R - 260, ry, {
-      width: 260,
+    .text((isInvoice ? "請求№　" : "見積№　") + no, RIGHT_X, ry, {
+      width: RIGHT_W,
       align: "right",
     });
-  ry += 11;
+  ry += 18;
   if (isInvoice) {
-    doc.text(`適格請求書発行事業者登録番号　${COMPANY.regNo}`, R - 260, ry, {
-      width: 260,
+    doc.text(`適格請求書発行事業者登録番号　${COMPANY.regNo}`, RIGHT_X, ry, {
+      width: RIGHT_W,
       align: "right",
     });
-    ry += 13;
+    ry += 20;
   }
+  // 発行者名は1回だけ印字する（「（株式会社ウィン）」の併記は削除済み）
   doc
-    .fontSize(11)
-    .text(COMPANY.name, R - 250, ry, { width: 250, align: "right" });
-  ry += 15;
-  if (isInvoice) {
-    doc
-      .fontSize(8)
-      .fillColor(GRAY)
-      .text(`（${COMPANY.legalName}）`, R - 250, ry, {
-        width: 250,
-        align: "right",
-      });
-    ry += 11;
-  }
-  doc.fontSize(8).fillColor(GRAY);
+    .fontSize(FONT_RIGHT_NAME)
+    .text(COMPANY.name, RIGHT_X, ry, { width: RIGHT_W, align: "right" });
+  ry += 24;
+  doc.fontSize(FONT_RIGHT).fillColor(GRAY_DARK);
   for (const t of [COMPANY.zip, COMPANY.addrInv, COMPANY.tel]) {
-    doc.text(t, R - 250, ry, { width: 250, align: "right" });
-    ry += 11;
+    doc.text(t, RIGHT_X, ry, { width: RIGHT_W, align: "right" });
+    ry += 17;
   }
   doc.fillColor("#000");
-  if (isInvoice && variant === "sealed") {
-    drawDummySeal(doc, R - 28, ry + 25, now);
+  if (isInvoice) {
+    drawCompanySeal(doc, R - 32, ry + 34);
   }
 
-  y += 48;
-  doc.fontSize(9).text(`件名：${project.name || ""}`, L, y);
-  y += 15;
+  y += 54;
+  doc.fontSize(FONT_BODY).text(`件名：${project.name || ""}`, L, y);
+  y += 20;
   if (isInvoice) {
     const period = aggregatePeriod(orderRows);
     if (period) {
       doc.text(`工期：${period}`, L, y);
-      y += 15;
+      y += 20;
     }
   }
   doc.text(
@@ -227,10 +241,11 @@ function drawDocumentHeader(
     L,
     y
   );
-  return y + 20;
+  return y + 24;
 }
 
 interface TotalsBoxParams {
+  bank: InvoiceBank;
   due: Date;
   isInvoice: boolean;
   now: Date;
@@ -241,23 +256,23 @@ interface TotalsBoxParams {
 function drawTotalsBox(
   doc: PDFKit.PDFDocument,
   y: number,
-  { due, isInvoice, now, total }: TotalsBoxParams
+  { bank, due, isInvoice, now, total }: TotalsBoxParams
 ): number {
   const boxW = 250;
-  const boxH = 46;
+  const boxH = 42;
   doc.lineWidth(1.2).strokeColor(ACCENT).rect(L, y, boxW, boxH).stroke();
   doc
-    .fontSize(10)
+    .fontSize(FONT_HEADING)
     .fillColor(ACCENT)
     .text(isInvoice ? "合計金額（税込）" : "御見積金額（税込）", L + 8, y + 6);
   doc
-    .fontSize(18)
+    .fontSize(FONT_TOTAL)
     .fillColor("#000")
     .text(`¥${total.toLocaleString()}`, L + 6, y + 20, {
       width: boxW - 12,
       align: "right",
     });
-  doc.fillColor("#000").fontSize(9);
+  doc.fillColor("#000").fontSize(FONT_BODY);
   doc.text(
     (isInvoice ? "請求日：" : "見積日：") + fmtDateJa(now),
     L + boxW + 24,
@@ -268,19 +283,22 @@ function drawTotalsBox(
     L + boxW + 24,
     y + 26
   );
-  let nextY = y + boxH + 8;
+  let nextY = y + boxH + 14;
   if (isInvoice) {
     doc
-      .fontSize(8)
+      .fontSize(FONT_BODY)
       .text(
-        `[振込先]　${COMPANY.bank}　／　口座番号　${COMPANY.account}　／　口座名義　${COMPANY.accountHolder}`,
+        `[振込先]　${bank.bank}　／　口座番号　${bank.account}　／　口座名義　${bank.holder}`,
         L,
         nextY
       );
-    nextY += 12;
-    doc.fontSize(7).fillColor(GRAY).text(`※${COMPANY.feeNote}`, L, nextY);
+    nextY += 18;
+    doc
+      .fontSize(FONT_NOTE)
+      .fillColor(GRAY)
+      .text(`※${COMPANY.feeNote}`, L, nextY);
     doc.fillColor("#000");
-    nextY += 14;
+    nextY += 20;
   } else {
     nextY += 4;
   }
@@ -288,81 +306,126 @@ function drawTotalsBox(
 }
 
 const ITEM_COLS = [
-  { k: "name" as const, label: "品　　名", w: 180, align: "left" as const },
-  { k: "qty" as const, label: "数量", w: 40, align: "right" as const },
-  { k: "unit" as const, label: "単位", w: 35, align: "center" as const },
-  { k: "price" as const, label: "単価", w: 80, align: "right" as const },
-  { k: "amount" as const, label: "金　額", w: 85, align: "right" as const },
-  { k: "note" as const, label: "摘要", w: W - 420, align: "left" as const },
+  { k: "name" as const, label: "品　　名", w: 140, align: "left" as const },
+  { k: "qty" as const, label: "数量", w: 36, align: "right" as const },
+  { k: "unit" as const, label: "単位", w: 32, align: "center" as const },
+  { k: "price" as const, label: "単価", w: 96, align: "right" as const },
+  { k: "amount" as const, label: "金　額", w: 96, align: "right" as const },
+  { k: "note" as const, label: "摘要", w: W - 400, align: "left" as const },
 ];
-const ROW_H = 22;
-const PAGE_BREAK_Y = 700;
-const TOP_Y = 50;
+/** 明細1行の最小高さ。摘要・品名が折り返す場合は文字数に応じて行が伸びる */
+/** 明細欄の最小行数。入力が少ないときの2行目以降は空白行にする。 */
+const MIN_ITEM_ROWS = 5;
+const BLANK_ROW_H = 28;
+const ROW_H = 56;
+/** 明細表の見出し行の高さ（明細行より低くする） */
+const HEADER_ROW_H = 36;
+const CELL_PAD_Y = 5;
+const TOP_Y = 28;
+const SUMMARY_ROW_H = 36;
+const SUMMARY_ROWS = 4;
+/** 小計ブロック（上余白10＋4行）の高さ */
+const SUMMARY_BLOCK_H = 20 + SUMMARY_ROW_H * SUMMARY_ROWS;
+/** 見積書の末尾注記の高さ（余白18＋1行） */
+const ESTIMATE_NOTE_H = 30;
 
+type ItemCellValues = Partial<Record<(typeof ITEM_COLS)[number]["k"], string>>;
+
+function heightOf(doc: PDFKit.PDFDocument, width: number, text: string) {
+  doc.fontSize(FONT_BODY);
+  return doc.heightOfString(text, { width });
+}
+
+/** 折り返しを考慮した行の高さ（最小 minH）。 */
+function measureItemRow(
+  doc: PDFKit.PDFDocument,
+  vals: ItemCellValues,
+  minH = ROW_H
+): number {
+  doc.fontSize(FONT_BODY);
+  let h = minH;
+  for (const c of ITEM_COLS) {
+    const v = vals[c.k];
+    if (v) {
+      h = Math.max(
+        h,
+        doc.heightOfString(String(v), { width: c.w - 8 }) + CELL_PAD_Y * 2
+      );
+    }
+  }
+  return Math.ceil(h);
+}
+
+/** 1行を描画し、その行の高さを返す。 */
 function drawItemRow(
   doc: PDFKit.PDFDocument,
   y: number,
-  vals: Partial<Record<(typeof ITEM_COLS)[number]["k"], string>>,
-  headerBg = false
-): void {
+  vals: ItemCellValues,
+  headerBg = false,
+  minH = ROW_H
+): number {
+  const rowH = measureItemRow(doc, vals, minH);
   let cx = L;
   for (const c of ITEM_COLS) {
     if (headerBg) {
-      doc.fillColor(ACCENT).rect(cx, y, c.w, ROW_H).fill();
+      doc.fillColor(ACCENT).rect(cx, y, c.w, rowH).fill();
     }
     doc
       .lineWidth(0.6)
       .strokeColor(headerBg ? ACCENT : "#999")
-      .rect(cx, y, c.w, ROW_H)
+      .rect(cx, y, c.w, rowH)
       .stroke();
     const v = vals[c.k];
     if (v !== undefined && v !== "") {
       doc
         .fillColor(headerBg ? "#fff" : "#000")
-        .fontSize(9)
-        .text(String(v), cx + 4, y + 6, { width: c.w - 8, align: c.align });
+        .fontSize(FONT_BODY)
+        .text(
+          String(v),
+          cx + 4,
+          y + (rowH - heightOf(doc, c.w - 8, String(v))) / 2,
+          { align: c.align, width: c.w - 8 }
+        );
     }
     cx += c.w;
   }
+  return rowH;
 }
 
 /** 明細テーブルを描画し（ページまたぎ含む）、続きの描画開始y座標を返す */
 function drawItemsTable(
   doc: PDFKit.PDFDocument,
   y: number,
-  items: LineItem[]
+  items: LineItem[],
+  trailingH: number
 ): number {
+  const headerVals = Object.fromEntries(ITEM_COLS.map((c) => [c.k, c.label]));
   let cursorY = y;
-  drawItemRow(
-    doc,
-    cursorY,
-    Object.fromEntries(ITEM_COLS.map((c) => [c.k, c.label])),
-    true
-  );
-  cursorY += ROW_H;
-  const minRows = 1;
-  const rowsN = Math.max(items.length, minRows);
+  cursorY += drawItemRow(doc, cursorY, headerVals, true, HEADER_ROW_H);
+  // 明細は入力行数ぶん自動で増える。入力が少ないときは、帳票らしく2行目以降を空白行で埋める。
+  const rowsN = Math.max(items.length, MIN_ITEM_ROWS);
   for (let i = 0; i < rowsN; i++) {
-    if (cursorY > PAGE_BREAK_Y) {
+    const it = items[i];
+    const minH = it ? ROW_H : BLANK_ROW_H;
+    const vals: ItemCellValues = it
+      ? {
+          name: it.name,
+          qty: String(it.qty),
+          unit: it.unit,
+          price: `¥${it.price.toLocaleString()}`,
+          amount: `¥${it.amount.toLocaleString()}`,
+          note: it.note,
+        }
+      : {};
+    // 最終行は続く小計ブロックまで下余白内に収まる場合だけ同じページに置く
+    const needed =
+      measureItemRow(doc, vals, minH) + (i === rowsN - 1 ? trailingH : 0);
+    if (cursorY + needed > CONTENT_BOTTOM_Y) {
       doc.addPage();
       cursorY = TOP_Y;
+      cursorY += drawItemRow(doc, cursorY, headerVals, true, HEADER_ROW_H);
     }
-    const it = items[i];
-    drawItemRow(
-      doc,
-      cursorY,
-      it
-        ? {
-            name: it.name,
-            qty: String(it.qty),
-            unit: it.unit,
-            price: `¥${it.price.toLocaleString()}`,
-            amount: `¥${it.amount.toLocaleString()}`,
-            note: it.note,
-          }
-        : {}
-    );
-    cursorY += ROW_H;
+    cursorY += drawItemRow(doc, cursorY, vals, false, minH);
   }
   return cursorY;
 }
@@ -373,21 +436,22 @@ function drawSummaryBlock(
   y: number,
   { subtotal, tax, total }: { subtotal: number; tax: number; total: number }
 ): number {
-  let cursorY = y + 10;
+  let cursorY = y + 20;
   const tlX = R - 220;
   const totalRow = (label: string, val: string, bold = false) => {
     doc.lineWidth(bold ? 1 : 0.6).strokeColor(bold ? ACCENT : "#999");
-    doc.rect(tlX, cursorY, 120, 20).stroke();
-    doc.rect(tlX + 120, cursorY, 100, 20).stroke();
+    doc.rect(tlX, cursorY, 120, SUMMARY_ROW_H).stroke();
+    doc.rect(tlX + 120, cursorY, 100, SUMMARY_ROW_H).stroke();
+    const size = bold ? FONT_HEADING + 1 : FONT_BODY;
     doc
       .fillColor(bold ? ACCENT : "#000")
-      .fontSize(bold ? 11 : 9)
-      .text(label, tlX + 6, cursorY + (bold ? 4 : 6));
-    doc.fontSize(bold ? 11 : 9).text(val, tlX + 124, cursorY + (bold ? 4 : 6), {
+      .fontSize(size)
+      .text(label, tlX + 6, cursorY + (bold ? 11 : 13));
+    doc.fontSize(size).text(val, tlX + 124, cursorY + (bold ? 11 : 13), {
       width: 92,
       align: "right",
     });
-    cursorY += 20;
+    cursorY += SUMMARY_ROW_H;
   };
   totalRow("小　　計", `¥${subtotal.toLocaleString()}`);
   totalRow("税率", "10%");
@@ -399,9 +463,37 @@ function drawSummaryBlock(
 export interface FrozenInvoiceValues {
   dueDate: Date;
   invoiceDate: Date;
+  /** 発行時に保存した明細行。無ければ（旧データ）契約金額1行で再構成する */
+  items?: CustomLineItem[] | null;
   subtotal: number;
   tax: number;
   total: number;
+}
+
+/** 明細行を決める。発行済み（frozen）は保存した明細、無ければ契約金額1行。 */
+function resolveItems(
+  isInvoice: boolean,
+  project: ProjectRow,
+  orderRows: OrderRow[],
+  customItems: CustomLineItem[] | null | undefined,
+  frozen: FrozenInvoiceValues | undefined
+): LineItem[] {
+  if (!frozen) {
+    return computeLineItems(isInvoice, project, orderRows, customItems);
+  }
+  if (frozen.items && frozen.items.length > 0) {
+    return computeLineItems(isInvoice, project, orderRows, frozen.items);
+  }
+  return [
+    {
+      amount: frozen.subtotal,
+      name: project.name || "一式",
+      note: "",
+      price: frozen.subtotal,
+      qty: 1,
+      unit: "式",
+    },
+  ];
 }
 
 function buildDocumentPDF(
@@ -409,38 +501,31 @@ function buildDocumentPDF(
   project: ProjectRow,
   orderRows: OrderRow[],
   customItems: CustomLineItem[] | null | undefined,
-  variant: InvoiceVariant = "sealed",
   invoiceNo?: string,
-  frozen?: FrozenInvoiceValues
+  frozen?: FrozenInvoiceValues,
+  bank: InvoiceBank = DEFAULT_INVOICE_BANK
 ): Promise<Buffer> {
   const isInvoice = kind === "invoice";
   // 発行済みの請求書を再表示・再ダウンロードする場合は、PDFファイル自体は保存
   // せず、発行時にinvoicesテーブルへ保持した金額・日付（frozen）から都度PDFを
   // 再構成する。ライブプレビュー（未発行のドラフト編集中）はfrozenを渡さず、
   // 現在の発注データ・本日日付から都度計算する（従来通り）。
-  const items = frozen
-    ? [
-        {
-          amount: frozen.subtotal,
-          name: project.name || "一式",
-          note: "",
-          price: frozen.subtotal,
-          qty: 1,
-          unit: "式",
-        },
-      ]
-    : computeLineItems(isInvoice, project, orderRows, customItems);
+  const items = resolveItems(
+    isInvoice,
+    project,
+    orderRows,
+    customItems,
+    frozen
+  );
   const subtotal = frozen
     ? frozen.subtotal
     : items.reduce((s, it) => s + it.amount, 0);
-  const tax = frozen ? frozen.tax : Math.floor(subtotal * 0.1);
+  const tax = frozen ? frozen.tax : calcInvoiceTax(subtotal);
   const total = frozen ? frozen.total : subtotal + tax;
   const now = frozen?.invoiceDate ?? new Date();
   const due =
     frozen?.dueDate ?? new Date(now.getTime() + DUE_DAYS * MS_PER_DAY);
-  const title =
-    (isInvoice ? "請　求　書" : "見　積　書") +
-    (isInvoice && variant === "copy" ? "（控）" : "");
+  const title = isInvoice ? "請　求　書" : "見　積　書";
   // 請求書はDB(invoices.invoice_no)側の正式な番号をそのまま印字する（未確定の場合のみ
   // 案件IDベースの仮番号にフォールバック）。見積書はDB上に永続化される番号を持たない
   // ため、従来通り案件IDベースで生成する。
@@ -448,61 +533,79 @@ function buildDocumentPDF(
     ? (invoiceNo ?? `WW-${String(project.id).padStart(3, "0")}`)
     : `EST-${String(project.id).padStart(3, "0")}`;
 
-  return new Promise((resolve, reject) => {
-    const doc = new PDFDocument({ margin: 40, size: "A4", bufferPages: true });
-    const chunks: Buffer[] = [];
-    doc.on("data", (c: Buffer) => chunks.push(c));
-    doc.on("end", () => resolve(Buffer.concat(chunks)));
-    doc.on("error", reject);
-    useJpFont(doc);
+  /** 指定の用紙サイズで1回描画する。最終のy座標とページ数も返す（1ページに収まる場合の用紙高さ調整に使う）。 */
+  const renderPdf = (
+    size: "A4" | [number, number],
+    bottomMargin = PAGE_MARGIN_BOTTOM
+  ): Promise<{ buf: Buffer; endY: number; pages: number }> =>
+    new Promise((resolve, reject) => {
+      let endY = 0;
+      let pages = 1;
+      const doc = new PDFDocument({
+        bufferPages: true,
+        margins: {
+          bottom: bottomMargin,
+          left: PAGE_MARGIN_SIDE,
+          right: PAGE_MARGIN_SIDE,
+          top: PAGE_MARGIN_TOP,
+        },
+        size,
+      });
+      const chunks: Buffer[] = [];
+      doc.on("data", (c: Buffer) => chunks.push(c));
+      doc.on("end", () => resolve({ buf: Buffer.concat(chunks), endY, pages }));
+      doc.on("error", reject);
+      useJpFont(doc);
 
-    let y = drawDocumentHeader(doc, {
-      isInvoice,
-      no,
-      now,
-      orderRows,
-      project,
-      title,
-      variant,
+      let y = drawDocumentHeader(doc, {
+        isInvoice,
+        no,
+        orderRows,
+        project,
+        title,
+      });
+      y = drawTotalsBox(doc, y, { bank, due, isInvoice, now, total });
+      y = drawItemsTable(
+        doc,
+        y,
+        items,
+        SUMMARY_BLOCK_H + (isInvoice ? 0 : ESTIMATE_NOTE_H)
+      );
+      y = drawSummaryBlock(doc, y, { subtotal, tax, total });
+
+      if (!isInvoice) {
+        y += 18;
+        doc
+          .fillColor(GRAY)
+          .fontSize(FONT_NOTE)
+          .text("※本見積書の有効期限は発行日より30日間です。", L, y);
+        y += FONT_NOTE + 2;
+      }
+      endY = y;
+      pages = doc.bufferedPageRange().count;
+      doc.end();
     });
-    y = drawTotalsBox(doc, y, { due, isInvoice, now, total });
-    y = drawItemsTable(doc, y, items);
-    y = drawSummaryBlock(doc, y, { subtotal, tax, total });
 
-    if (!isInvoice) {
-      y += 18;
-      doc
-        .fillColor(GRAY)
-        .fontSize(8)
-        .text("※本見積書の有効期限は発行日より30日間です。", L, y);
-    }
-    doc.end();
-  });
+  // 用紙は常にA4。
+  return renderPdf("A4").then((r) => r.buf);
 }
 
-export function buildInvoicePDF(
+export async function buildInvoicePDF(
   project: ProjectRow,
   orderRows: OrderRow[],
   customItems: CustomLineItem[] | null | undefined,
-  variant?: InvoiceVariant,
   invoiceNo?: string,
   frozen?: FrozenInvoiceValues
 ): Promise<Buffer> {
+  // 振込先は案件の入金先（自社口座マスタ）から引く。未選択なら既定の口座。
+  const bank = await resolveInvoiceBank(project.companyAccountId);
   return buildDocumentPDF(
     "invoice",
     project,
     orderRows,
     customItems,
-    variant,
     invoiceNo,
-    frozen
+    frozen,
+    bank
   );
-}
-
-export function buildEstimatePDF(
-  project: ProjectRow,
-  orderRows: OrderRow[],
-  customItems?: CustomLineItem[] | null
-): Promise<Buffer> {
-  return buildDocumentPDF("estimate", project, orderRows, customItems);
 }

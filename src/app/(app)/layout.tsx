@@ -1,4 +1,6 @@
 import { AppHeader } from "~/components/shell/app-header";
+import { IdleLogout } from "~/components/shell/idle-logout";
+import { PointerEventsGuard } from "~/components/shell/pointer-events-guard";
 import { SidebarNav } from "~/components/shell/sidebar-nav";
 import { requireSession } from "~/server/auth/require-session";
 
@@ -11,9 +13,11 @@ export default async function AppLayout({
 
   return (
     <div className="flex h-dvh">
+      <IdleLogout />
+      <PointerEventsGuard />
       <aside className="flex w-48 shrink-0 flex-col border-r bg-muted/30">
         <div className="flex h-14 shrink-0 items-center border-b px-4 font-bold text-lg">
-          construct-pro
+          物件管理システム
         </div>
         <div className="flex-1 overflow-y-auto">
           <SidebarNav role={user.role} />

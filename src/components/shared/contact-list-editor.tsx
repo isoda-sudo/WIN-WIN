@@ -1,10 +1,39 @@
 "use client";
 
 import { Plus, X } from "lucide-react";
+import { z } from "zod";
 import { Button } from "~/components/ui/button";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { type EmailContact, emptyContact, MAX_CONTACTS } from "~/lib/contacts";
+
+const emailSchema = z.string().email();
+
+/**
+ * 保存前の担当者リスト整形。全項目が空の行は除去し、残った行は前後空白を
+ * 除いたうえでメール形式を検証する（不正なら error に利用者向け文言を返す）。
+ */
+export function cleanContacts(
+  contacts: EmailContact[],
+  label: string
+): { contacts: EmailContact[]; error?: string } {
+  const cleaned = contacts
+    .map((c) => ({
+      name: c.name.trim(),
+      email: c.email.trim(),
+      title: (c.title ?? "").trim(),
+    }))
+    .filter((c) => c.name || c.email || c.title);
+  for (const c of cleaned) {
+    if (!emailSchema.safeParse(c.email).success) {
+      return {
+        contacts: cleaned,
+        error: `${label}のメールアドレスが正しくありません（${c.name || c.email || "未入力"}）`,
+      };
+    }
+  }
+  return { contacts: cleaned };
+}
 
 /**
  * 顧客・発注先マスタのTO担当者/CC関係者を編集する共通コンポーネント。

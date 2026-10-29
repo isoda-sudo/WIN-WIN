@@ -1,206 +1,129 @@
 import { TRPCError } from "@trpc/server";
-import { desc, eq } from "drizzle-orm";
+import { and, eq, isNull, ne, or } from "drizzle-orm";
 import { z } from "zod";
+import { actualPaidAmount } from "~/lib/actual-paid";
+import {
+  MAX_PAYMENT_METHOD_LENGTH,
+  MISC_STATUS_PAID,
+  MISC_STATUS_UNPAID,
+  paymentYearMonth,
+} from "~/lib/recurring-payments";
+import { SUPERSEDED_STATUS } from "~/lib/superseded";
 import {
   accountingOrAdminProcedure,
   createTRPCRouter,
+  financialReadProcedure,
 } from "~/server/api/trpc";
 import { logAudit } from "~/server/audit/log";
 import { db } from "~/server/db";
+import { miscPayments, orders, projects } from "~/server/db/schema";
 import {
-  miscPayments,
-  orders,
-  paymentRecords,
-  projects,
-  vendors,
-} from "~/server/db/schema";
+  assertActiveCategory,
+  currentJstYearMonth,
+  nextMiscPaymentNoTx,
+} from "~/server/payments/misc-payment";
+import {
+  assertActiveCompanyAccount,
+  computeTransferFee,
+  feeFromContext,
+  loadFeeContext,
+} from "~/server/payments/transfer-fee";
 
-const nonNegAmount = z.number().nonnegative().nullish();
+const nonNegAmount = z
+  .number()
+  .int()
+  .nonnegative()
+  .max(1_000_000_000_000)
+  .nullish();
+// 振込手数料はクライアントから受け取らない（自社口座のルールからサーバーが算出する）。
+const companyAccountInput = z.number().int().nullish();
+const paymentMethodInput = z
+  .string()
+  .trim()
+  .max(MAX_PAYMENT_METHOD_LENGTH)
+  .nullish();
 
-/** amount系フィールドの表示整形。server.js fmtVal 相当（金額は3桁区切り、無しは "(空)"）。 */
-function fmtVal(v: number | null | undefined): string {
-  if (v === null || v === undefined) {
-    return "(空)";
-  }
-  return v.toLocaleString();
+function yen(n: number | null | undefined): string {
+  return n == null ? "-" : `¥${n.toLocaleString()}`;
 }
 
-/**
- * 支払登録明細の削除時、注文の残金・支払状況を巻き戻す計算。server.js の
- * DELETE /api/payment-records/:id の restored/status 算出ロジックそのまま。
- */
-function computeRestoredOrder(
-  order: {
-    remaining: number | null;
-    decided: number | null;
-    paymentStatus: string | null;
-  },
-  recAmount: number
-): { remaining: number; status: string | null } {
-  const cur = order.remaining == null ? order.decided || 0 : order.remaining;
-  const restored = Math.min(order.decided || cur + recAmount, cur + recAmount);
-  let status = order.paymentStatus;
-  if (restored >= (order.decided || 0)) {
-    status = "未払い";
-  } else if (restored > 0) {
-    status = "部分払い";
+interface FeeMethod {
+  paymentMethod?: string | null;
+  transferFee?: number | null;
+}
+
+function feeMethodChanges(before: FeeMethod, after: FeeMethod): string[] {
+  const out: string[] = [];
+  if (
+    after.transferFee !== undefined &&
+    after.transferFee !== before.transferFee
+  ) {
+    out.push(
+      `振込手数料 ${yen(before.transferFee)} → ${yen(after.transferFee)}`
+    );
   }
-  return { remaining: restored, status };
+  if (
+    after.paymentMethod !== undefined &&
+    (after.paymentMethod || null) !== (before.paymentMethod || null)
+  ) {
+    out.push(
+      `支払方法 ${before.paymentMethod || "-"} → ${after.paymentMethod || "-"}`
+    );
+  }
+  return out;
+}
+
+interface FeeInputs {
+  amount: number | null;
+  companyAccountId: number | null;
+  payee: string | null;
+}
+
+type MiscRow = typeof miscPayments.$inferSelect;
+
+/**
+ * 更新時の手数料。支払済みの行は口座・金額・相手先が変わらない限り算出済みの値を保つ
+ * （ルール変更を遡及させない）。それ以外（未払い等）は常に現行ルールで再算出する。
+ */
+async function resolveFeeOnUpdate(
+  before: MiscRow,
+  next: FeeInputs
+): Promise<number | null> {
+  const unchanged =
+    before.companyAccountId === next.companyAccountId &&
+    before.amount === next.amount &&
+    before.payee === next.payee;
+  if (before.status === MISC_STATUS_PAID && unchanged) {
+    return before.transferFee;
+  }
+  return await computeTransferFee(db, next);
 }
 
 export const paymentsRouter = createTRPCRouter({
-  // 支払登録明細（消し込み履歴） — orders.remaining / orders.paymentStatus と連動する
-  records: createTRPCRouter({
-    list: accountingOrAdminProcedure.query(
-      async () =>
-        await db
-          .select({
-            id: paymentRecords.id,
-            orderId: paymentRecords.orderId,
-            paidDate: paymentRecords.paidDate,
-            amount: paymentRecords.amount,
-            note: paymentRecords.note,
-            createdAt: paymentRecords.createdAt,
-            category: orders.category,
-            vendor: orders.vendor,
-            decided: orders.decided,
-            remaining: orders.remaining,
-            projectName: projects.name,
-          })
-          .from(paymentRecords)
-          .leftJoin(orders, eq(paymentRecords.orderId, orders.id))
-          .leftJoin(projects, eq(orders.projectId, projects.id))
-          .orderBy(desc(paymentRecords.createdAt))
-    ),
-
-    // 支払登録（残金から差し引き、必要に応じてステータス自動更新）
-    create: accountingOrAdminProcedure
-      .input(
-        z.object({
-          orderId: z.number(),
-          amount: z.number(),
-          paidDate: z.string().nullish(),
-          note: z.string().nullish(),
-        })
-      )
-      .mutation(async ({ ctx, input }) => {
-        const amount = Math.max(0, Math.trunc(input.amount) || 0);
-        const paidDate =
-          input.paidDate || new Date().toISOString().slice(0, 10);
-        if (!input.orderId || amount <= 0) {
-          throw new TRPCError({
-            code: "BAD_REQUEST",
-            message: "支払額を入力してください",
-          });
-        }
-        const order = await db.query.orders.findFirst({
-          where: eq(orders.id, input.orderId),
-        });
-        if (!order) {
-          throw new TRPCError({
-            code: "NOT_FOUND",
-            message: "発注明細が見つかりません",
-          });
-        }
-        // 振込実行時に口座情報が無いまま支払済みにしてしまうのを防ぐため、
-        // 発注先マスタに口座番号が登録されているかをここで確認する。
-        if (order.vendor) {
-          const vendor = await db.query.vendors.findFirst({
-            where: eq(vendors.company, order.vendor),
-          });
-          if (!vendor?.bankNumber) {
-            throw new TRPCError({
-              code: "BAD_REQUEST",
-              message: `発注先「${order.vendor}」の口座番号が未登録のため支払を記録できません。発注先マスタで登録してください。`,
-            });
-          }
-        }
-        const cur =
-          order.remaining == null ? order.decided || 0 : order.remaining;
-        const newRemaining = Math.max(0, cur - amount);
-        let status = order.paymentStatus;
-        if (newRemaining <= 0) {
-          status = "支払済み";
-        } else if (newRemaining < (order.decided || 0)) {
-          status = "部分払い";
-        }
-
-        // 残金更新と支払登録明細の作成を1トランザクションで保護する
-        // （途中で失敗すると残金だけ減って明細が残らない不整合が起き得るため）
-        const recId = await db.transaction(async (tx) => {
-          await tx
-            .update(orders)
-            .set({ remaining: newRemaining, paymentStatus: status })
-            .where(eq(orders.id, input.orderId));
-          const [ins] = await tx
-            .insert(paymentRecords)
-            .values({
-              orderId: input.orderId,
-              paidDate,
-              amount,
-              note: input.note || "",
-            })
-            .returning({ id: paymentRecords.id });
-          if (!ins) {
-            throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-          }
-          return ins.id;
-        });
-
-        await logAudit(ctx.user.id, "CREATE", "orders", input.orderId, {
-          name: `${order.category || ""}（${order.vendor || ""}）`,
-          changes: [
-            `支払登録 ¥${amount.toLocaleString()}（残金 ${fmtVal(cur)} → ${fmtVal(newRemaining)}）`,
-          ],
-        });
-
-        return { success: true, id: recId, remaining: newRemaining, status };
-      }),
-
-    // 支払登録明細の削除（残金を戻す）
-    delete: accountingOrAdminProcedure
-      .input(z.object({ id: z.number() }))
-      .mutation(async ({ ctx, input }) => {
-        const rec = await db.query.paymentRecords.findFirst({
-          where: eq(paymentRecords.id, input.id),
-        });
-        if (rec) {
-          // 残金の巻き戻しと明細削除を1トランザクションで保護する（途中失敗による不整合防止）
-          await db.transaction(async (tx) => {
-            const order =
-              rec.orderId == null
-                ? undefined
-                : await tx.query.orders.findFirst({
-                    where: eq(orders.id, rec.orderId),
-                  });
-            if (order) {
-              const { remaining, status } = computeRestoredOrder(
-                order,
-                rec.amount || 0
-              );
-              await tx
-                .update(orders)
-                .set({ remaining, paymentStatus: status })
-                .where(eq(orders.id, order.id));
-            }
-            await tx
-              .delete(paymentRecords)
-              .where(eq(paymentRecords.id, input.id));
-          });
-          await logAudit(ctx.user.id, "DELETE", "orders", rec.orderId ?? 0, {
-            name: `#${rec.orderId}`,
-            changes: [
-              `支払登録を取消（¥${(rec.amount || 0).toLocaleString()}）`,
-            ],
-          });
-        }
-        return { success: true };
-      }),
+  // 発注明細ごとの実支払額（支払済み=確定額、それ以外=0）。削除済み案件は除く。
+  actuals: financialReadProcedure.query(async () => {
+    const rows = await db
+      .select({
+        orderId: orders.id,
+        projectId: orders.projectId,
+        vendor: orders.vendor,
+        decided: orders.decided,
+        paymentStatus: orders.paymentStatus,
+      })
+      .from(orders)
+      .innerJoin(projects, eq(orders.projectId, projects.id))
+      .where(
+        and(
+          isNull(projects.deletedAt),
+          or(isNull(projects.status), ne(projects.status, SUPERSEDED_STATUS))
+        )
+      );
+    return rows.map((r) => ({ ...r, actualPaid: actualPaidAmount(r) }));
   }),
 
   // 案件外支払（工事外費用・給与その他） — orders/projects とは無関係の独立テーブル
   misc: createTRPCRouter({
-    list: accountingOrAdminProcedure.query(
+    list: financialReadProcedure.query(
       async () =>
         await db.query.miscPayments.findMany({
           orderBy: (t, { desc: descOrder }) => [descOrder(t.id)],
@@ -210,38 +133,60 @@ export const paymentsRouter = createTRPCRouter({
     create: accountingOrAdminProcedure
       .input(
         z.object({
-          category: z.string().nullish(),
+          category: z.string().trim().min(1, "カテゴリを選択してください"),
           type: z.string().nullish(),
           payee: z.string().nullish(),
           amount: nonNegAmount,
           paymentDate: z.string().nullish(),
           status: z.string().nullish(),
           notes: z.string().nullish(),
+          companyAccountId: companyAccountInput,
+          paymentMethod: paymentMethodInput,
         })
       )
       .mutation(async ({ ctx, input }) => {
-        const [row] = await db
-          .insert(miscPayments)
-          .values({
-            category: input.category || "",
-            type: input.type || "支払",
-            payee: input.payee || "",
+        const created = await db.transaction(async (tx) => {
+          await assertActiveCategory(tx, input.category);
+          if (input.companyAccountId != null) {
+            await assertActiveCompanyAccount(tx, input.companyAccountId);
+          }
+          const transferFee = await computeTransferFee(tx, {
+            companyAccountId: input.companyAccountId,
+            payee: input.payee,
             amount: input.amount || 0,
-            paymentDate: input.paymentDate || "",
-            status: input.status || "未払い",
-            notes: input.notes || "",
-          })
-          .returning({ id: miscPayments.id });
-        if (!row) {
-          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-        }
-        await logAudit(ctx.user.id, "CREATE", "misc_payments", row.id, {
-          name: `${input.category || "-"}（${input.payee || "-"}）`,
+          });
+          const paymentNo = await nextMiscPaymentNoTx(
+            tx,
+            paymentYearMonth(input.paymentDate, currentJstYearMonth())
+          );
+          const [row] = await tx
+            .insert(miscPayments)
+            .values({
+              category: input.category,
+              type: input.type || "支払",
+              payee: input.payee || "",
+              amount: input.amount || 0,
+              paymentDate: input.paymentDate || "",
+              status: input.status || "未払い",
+              notes: input.notes || "",
+              transferFee,
+              companyAccountId: input.companyAccountId ?? null,
+              paymentMethod: input.paymentMethod || null,
+              paymentNo,
+            })
+            .returning({ id: miscPayments.id });
+          if (!row) {
+            throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+          }
+          return { id: row.id, paymentNo, transferFee };
+        });
+        await logAudit(ctx.user.id, "CREATE", "misc_payments", created.id, {
+          name: `${input.category}（${input.payee || "-"}）`,
           changes: [
-            `新規登録（${input.type || "支払"}: ¥${(input.amount || 0).toLocaleString()}）`,
+            `新規登録（${input.type || "支払"}: ¥${(input.amount || 0).toLocaleString()}、支払No ${created.paymentNo}、振込手数料 ${yen(created.transferFee)}、支払方法 ${input.paymentMethod || "-"}）`,
           ],
         });
-        return { id: row.id, ...input };
+        return { ...created, ...input };
       }),
 
     update: accountingOrAdminProcedure
@@ -255,30 +200,112 @@ export const paymentsRouter = createTRPCRouter({
           paymentDate: z.string().nullish(),
           status: z.string().nullish(),
           notes: z.string().nullish(),
+          companyAccountId: companyAccountInput,
+          paymentMethod: paymentMethodInput,
         })
       )
       .mutation(async ({ ctx, input }) => {
         const before = await db.query.miscPayments.findFirst({
           where: eq(miscPayments.id, input.id),
         });
+        if (!before) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "支払が見つかりません",
+          });
+        }
+        // 既存の旧値（マスタ未登録の過去カテゴリ）は据え置きなら許容、変更時のみマスタ検証。
+        if (input.category != null && input.category !== before.category) {
+          await assertActiveCategory(db, input.category);
+        }
+        const companyAccountId =
+          input.companyAccountId === undefined
+            ? before.companyAccountId
+            : input.companyAccountId;
+        if (
+          companyAccountId != null &&
+          companyAccountId !== before.companyAccountId
+        ) {
+          await assertActiveCompanyAccount(db, companyAccountId);
+        }
+        const next = {
+          amount: input.amount ?? before.amount,
+          payee: input.payee ?? before.payee,
+          companyAccountId,
+        };
+        const transferFee = await resolveFeeOnUpdate(before, next);
         await db
           .update(miscPayments)
           .set({
-            category: input.category ?? before?.category,
-            type: input.type ?? before?.type,
-            payee: input.payee ?? before?.payee,
-            amount: input.amount ?? before?.amount,
-            paymentDate: input.paymentDate ?? before?.paymentDate,
-            status: input.status ?? before?.status,
-            notes: input.notes ?? before?.notes,
+            category: input.category ?? before.category,
+            type: input.type ?? before.type,
+            payee: input.payee ?? before.payee,
+            amount: input.amount ?? before.amount,
+            paymentDate: input.paymentDate ?? before.paymentDate,
+            status: input.status ?? before.status,
+            notes: input.notes ?? before.notes,
+            companyAccountId,
+            transferFee,
+            paymentMethod:
+              input.paymentMethod === undefined
+                ? before.paymentMethod
+                : input.paymentMethod || null,
           })
           .where(eq(miscPayments.id, input.id));
         await logAudit(ctx.user.id, "UPDATE", "misc_payments", input.id, {
-          name: `${before?.category || input.category || ""}（${before?.payee || input.payee || ""}）`,
-          changes: ["更新"],
+          name: `${before.category || input.category || ""}（${before.payee || input.payee || ""}）`,
+          changes: [
+            "更新",
+            ...feeMethodChanges(before, { ...input, transferFee }),
+          ],
         });
-        return input;
+        return { ...input, transferFee };
       }),
+
+    // 未払い行だけ、現行の手数料ルールで transfer_fee を再算出する。支払済みの行は触らない。
+    recalcFees: accountingOrAdminProcedure.mutation(async ({ ctx }) => {
+      const changed = await db.transaction(async (tx) => {
+        const feeCtx = await loadFeeContext(tx);
+        const rows = await tx
+          .select()
+          .from(miscPayments)
+          .where(
+            or(
+              eq(miscPayments.status, MISC_STATUS_UNPAID),
+              isNull(miscPayments.status)
+            )
+          );
+        let count = 0;
+        for (const row of rows) {
+          const fee = feeFromContext(feeCtx, {
+            companyAccountId: row.companyAccountId,
+            payee: row.payee,
+            amount: row.amount,
+          });
+          if (fee !== row.transferFee) {
+            await tx
+              .update(miscPayments)
+              .set({ transferFee: fee })
+              .where(
+                and(
+                  eq(miscPayments.id, row.id),
+                  or(
+                    eq(miscPayments.status, MISC_STATUS_UNPAID),
+                    isNull(miscPayments.status)
+                  )
+                )
+              );
+            count += 1;
+          }
+        }
+        return count;
+      });
+      await logAudit(ctx.user.id, "UPDATE", "misc_payments", 0, {
+        name: "振込手数料の再計算",
+        changes: [`未払いの支払 ${changed} 件の振込手数料を再計算`],
+      });
+      return { updated: changed };
+    }),
 
     delete: accountingOrAdminProcedure
       .input(z.object({ id: z.number() }))
@@ -286,6 +313,20 @@ export const paymentsRouter = createTRPCRouter({
         const before = await db.query.miscPayments.findFirst({
           where: eq(miscPayments.id, input.id),
         });
+        if (!before) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "支払が見つかりません",
+          });
+        }
+        // 支払No付き・定期支払い由来の行は保存義務と番号の再利用防止のため削除できない
+        if (before.recurringId !== null || before.paymentNo !== null) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message:
+              "支払Noが付与された支払・定期支払いから作成された支払は、保存と番号の再利用防止のため削除できません",
+          });
+        }
         await db.delete(miscPayments).where(eq(miscPayments.id, input.id));
         await logAudit(ctx.user.id, "DELETE", "misc_payments", input.id, {
           name: `${before?.category || ""}（${before?.payee || ""}）`,

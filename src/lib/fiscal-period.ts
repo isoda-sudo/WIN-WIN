@@ -11,6 +11,29 @@ const TABS_BEFORE_AFTER = 3;
 // （遡ると「第0期」「第-1期」のような期が表示されてしまう）。
 const MIN_FISCAL_PERIOD = FISCAL_TERM_BASE_OFFSET + 1;
 
+const JST_TIME_ZONE = "Asia/Tokyo";
+const jstDateFormatter = new Intl.DateTimeFormat("en-CA", {
+  day: "2-digit",
+  month: "2-digit",
+  timeZone: JST_TIME_ZONE,
+  year: "numeric",
+});
+
+/**
+ * 指定日時の日本時間（JST）での年・月（1-12）・日を返す。サーバー（Vercel は UTC）と
+ * ブラウザで結果が食い違わないよう、getFullYear/getMonth 等のローカルTZゲッターは使わない。
+ */
+export function jstDateParts(date: Date = new Date()): {
+  day: number;
+  month: number;
+  year: number;
+} {
+  const parts = jstDateFormatter.formatToParts(date);
+  const pick = (type: string): number =>
+    Number(parts.find((p) => p.type === type)?.value);
+  return { day: pick("day"), month: pick("month"), year: pick("year") };
+}
+
 /** "YYYY-MM" 形式の年月が属する会計期（決算年、西暦4桁）を返す。 */
 export function fiscalPeriodOfMonth(yyyyMM: string): number | null {
   const [yearStr, monthStr] = yyyyMM.split("-");
@@ -22,10 +45,9 @@ export function fiscalPeriodOfMonth(yyyyMM: string): number | null {
   return month <= FISCAL_YEAR_END_MONTH ? year : year + 1;
 }
 
-/** 指定日時点の会計期（決算年、西暦4桁）を返す。 */
+/** 指定日時点（JST）の会計期（決算年、西暦4桁）を返す。 */
 export function currentFiscalPeriod(date: Date = new Date()): number {
-  const year = date.getFullYear();
-  const month = date.getMonth() + 1;
+  const { year, month } = jstDateParts(date);
   return month <= FISCAL_YEAR_END_MONTH ? year : year + 1;
 }
 
@@ -36,7 +58,9 @@ export function fiscalTermNumber(period: number): number {
 
 /** 会計期を案件IDに使う2桁表記に変換する（期数ベース、例: 第7期 → "07"）。 */
 export function fiscalPeriodLabel(period: number): string {
-  return String(fiscalTermNumber(period)).padStart(PERIOD_LABEL_DIGITS, "0");
+  // 第1期より前は存在しないため、第1期に丸める（"-1" のような表記を作らない）。
+  const term = Math.max(fiscalTermNumber(period), 1);
+  return String(term).padStart(PERIOD_LABEL_DIGITS, "0");
 }
 
 /**

@@ -47,13 +47,6 @@ const FIELD_LABELS: Record<string, Record<string, string>> = {
     startDate: "工期開始",
     status: "ステータス",
   },
-  receipts: {
-    amount: "金額",
-    memo: "備考",
-    month: "対象月",
-    projectId: "案件",
-    receivedDate: "入金日",
-  },
   vendors: {
     address: "住所",
     bankBranch: "支店",
@@ -76,13 +69,16 @@ const FIELD_LABELS: Record<string, Record<string, string>> = {
 const SENSITIVE_FIELDS = new Set(["bankNumber"]);
 
 const LONG_INTEGER_RE = /^-?\d{4,}$/;
+/** 金額として桁区切りにする項目。電話番号・郵便番号などは、先頭の0が消えないようそのまま出す。 */
+const AMOUNT_KEY_RE =
+  /amount|capital|estimate|planned|decided|price|fee|total/i;
 
-function fmtVal(v: unknown): string {
+function fmtVal(v: unknown, key = ""): string {
   if (v === null || v === undefined || v === "") {
     return "(空)";
   }
   const s = String(v);
-  if (LONG_INTEGER_RE.test(s)) {
+  if (AMOUNT_KEY_RE.test(key) && LONG_INTEGER_RE.test(s)) {
     return Number(s).toLocaleString();
   }
   return s;
@@ -108,7 +104,9 @@ export function diffChanges(
     if (SENSITIVE_FIELDS.has(key)) {
       changes.push(`${label}を変更`);
     } else {
-      changes.push(`${label}を ${fmtVal(before)} → ${fmtVal(after)} に変更`);
+      changes.push(
+        `${label}を ${fmtVal(before, key)} → ${fmtVal(after, key)} に変更`
+      );
     }
   }
   return changes;
@@ -127,6 +125,10 @@ export async function logAudit(
   details: AuditDetails = {}
 ): Promise<void> {
   if (!userId) {
+    return;
+  }
+  // 差分の更新で、変更点が無い（同じ値の保存）ときは履歴に残さない
+  if (action === "UPDATE" && details.changes?.length === 0) {
     return;
   }
   try {

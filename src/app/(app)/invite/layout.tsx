@@ -1,23 +1,17 @@
-import { redirect } from "next/navigation";
-import { requireSession } from "~/server/auth/require-session";
+import type { Metadata } from "next";
+import { requirePageAccess } from "~/server/auth/require-page-access";
 
-const ALLOWED_ROLES = ["admin"];
+export const metadata: Metadata = { title: "ユーザー招待" };
 
 /**
  * アカウント発行は管理者限定。
- * 旧app（public/invite.html）の Auth.redirectIfNotAllowedRole(['admin']) と同じ制御を、
- * サーバーコンポーネントのレイアウトで再現する。invite/page.tsx はクライアントツリーのため、
- * ここでガードすることでページ本体自体をマウントさせない。
- * フォールバック先はアプリのトップページ（受注一覧）。
+ * 許可ロールは `~/lib/roles` の PAGE_ROLES が唯一の定義元。
  */
 export default async function InviteLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const user = await requireSession();
-  if (!ALLOWED_ROLES.includes(user.role)) {
-    redirect("/projects");
-  }
+  await requirePageAccess("/invite");
   return children;
 }

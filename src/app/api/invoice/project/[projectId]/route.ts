@@ -1,18 +1,16 @@
 import { eq } from "drizzle-orm";
 import { type NextRequest, NextResponse } from "next/server";
+import {
+  contentDispositionAttachment,
+  contentDispositionInline,
+} from "~/lib/invoice-filename";
+import { denyTaxAdvisor } from "~/server/auth/route-guard";
 import { resolveAuthedUser } from "~/server/auth/session";
 import { db } from "~/server/db";
 import { orders, projects } from "~/server/db/schema";
-import { buildInvoicePDF, type InvoiceVariant } from "~/server/pdf/document";
+import { buildInvoicePDF } from "~/server/pdf/document";
 
 export const runtime = "nodejs";
-
-const INVOICE_VARIANTS: InvoiceVariant[] = ["sealed", "unsealed", "copy"];
-function normalizeVariant(v: string | null): InvoiceVariant {
-  return INVOICE_VARIANTS.includes(v as InvoiceVariant)
-    ? (v as InvoiceVariant)
-    : "sealed";
-}
 
 export async function GET(
   req: NextRequest,
@@ -21,6 +19,10 @@ export async function GET(
   const user = await resolveAuthedUser(req.headers);
   if (!user) {
     return NextResponse.json({ error: "認証が必要です" }, { status: 401 });
+  }
+  const denied = denyTaxAdvisor(user);
+  if (denied) {
+    return denied;
   }
 
   const { projectId } = await params;
@@ -36,14 +38,15 @@ export async function GET(
   const orderRows = await db.query.orders.findMany({
     where: eq(orders.projectId, Number(projectId)),
   });
-  const variant = normalizeVariant(req.nextUrl.searchParams.get("variant"));
-  const pdfBuffer = await buildInvoicePDF(project, orderRows, null, variant);
-  const disposition =
-    req.nextUrl.searchParams.get("inline") === "1" ? "inline" : "attachment";
+  const pdfBuffer = await buildInvoicePDF(project, orderRows, null);
+  const filename = `invoice-${project.id}.pdf`;
+  const inline = req.nextUrl.searchParams.get("inline") === "1";
   return new NextResponse(new Uint8Array(pdfBuffer), {
     headers: {
       "Content-Type": "application/pdf",
-      "Content-Disposition": `${disposition}; filename="invoice-${project.id}.pdf"`,
+      "Content-Disposition": inline
+        ? contentDispositionInline(filename)
+        : contentDispositionAttachment(filename),
     },
   });
 }

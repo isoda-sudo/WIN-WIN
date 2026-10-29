@@ -1,23 +1,17 @@
-import { redirect } from "next/navigation";
-import { requireSession } from "~/server/auth/require-session";
+import type { Metadata } from "next";
+import { requirePageAccess } from "~/server/auth/require-page-access";
 
-const ALLOWED_ROLES = ["admin", "accounting", "staff"];
+export const metadata: Metadata = { title: "履歴" };
 
 /**
- * 履歴閲覧は管理者・経理・一般社員に開放（閲覧専用viewerと、機能別の
- * 出し分けはaudit-logsルーター側・画面側の双方で行う）。
- * history/page.tsx は "use client" のため、ここでガードすることで
- * ページ本体自体をマウントさせない。フォールバック先はアプリのトップ
- * ページ（受注一覧）。
+ * 履歴詳細。管理者・経理・一般社員のみ（閲覧のみ・税理士・社労士は不可）。
+ * 許可ロールは `~/lib/roles` の PAGE_ROLES が唯一の定義元。
  */
 export default async function HistoryLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const user = await requireSession();
-  if (!ALLOWED_ROLES.includes(user.role)) {
-    redirect("/projects");
-  }
+  await requirePageAccess("/history");
   return children;
 }

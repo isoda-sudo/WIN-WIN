@@ -1,22 +1,17 @@
-import { redirect } from "next/navigation";
-import { requireSession } from "~/server/auth/require-session";
+import type { Metadata } from "next";
+import { requirePageAccess } from "~/server/auth/require-page-access";
 
-const ALLOWED_ROLES = ["admin", "accounting"];
+export const metadata: Metadata = { title: "支払い予定表" };
 
 /**
- * 支払管理は管理者・経理部限定（画面一覧の権限定義に合わせる）。
- * payment/page.tsx は "use client" のため、ここでガードすることで
- * ページ本体自体をマウントさせない。フォールバック先はアプリのトップ
- * ページ（受注一覧）。
+ * 支払い予定表。管理者・経理に加え、税理士・社労士が閲覧のみ可。
+ * 許可ロールは `~/lib/roles` の PAGE_ROLES が唯一の定義元。
  */
 export default async function PaymentLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const user = await requireSession();
-  if (!ALLOWED_ROLES.includes(user.role)) {
-    redirect("/projects");
-  }
+  await requirePageAccess("/payment");
   return children;
 }

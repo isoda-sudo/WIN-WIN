@@ -1,31 +1,52 @@
 import { TRPCError } from "@trpc/server";
-import { asc, eq, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import { z } from "zod";
+import { ROLE_LABELS, ROLES } from "~/lib/roles";
 import {
   adminProcedure,
   createTRPCRouter,
+  notViewerProcedure,
   protectedProcedure,
 } from "~/server/api/trpc";
 import { logAudit } from "~/server/audit/log";
 import { db } from "~/server/db";
 import { users } from "~/server/db/schema";
 
-const ROLE_LABELS: Record<string, string> = {
-  admin: "管理者",
-  accounting: "経理部",
-  staff: "一般社員",
-};
-const VALID_ROLES = new Set(Object.keys(ROLE_LABELS));
+const ROLE_LABEL_MAP: Record<string, string> = ROLE_LABELS;
+const VALID_ROLES = new Set<string>(ROLES);
 const VALID_STATUSES = new Set(["active", "suspended"]);
 
 export const usersRouter = createTRPCRouter({
   // ログイン中のユーザー自身の情報。role別デフォルト（例：工事計画の表示項目の
   // 原価情報デフォルト非表示）をクライアント側で判定するために使う軽量クエリ。
-  me: protectedProcedure.query(({ ctx }) => ({
-    id: ctx.user.id,
-    email: ctx.user.email,
-    role: ctx.user.role,
-  })),
+  me: protectedProcedure.query(async ({ ctx }) => {
+    const [row] = await db
+      .select({ emailSignature: users.emailSignature })
+      .from(users)
+      .where(eq(users.id, ctx.user.id))
+      .limit(1);
+    return {
+      id: ctx.user.id,
+      email: ctx.user.email,
+      role: ctx.user.role,
+      emailSignature: row?.emailSignature ?? "",
+    };
+  }),
+
+  // メール送信画面のCC初期値。全ての管理者と経理（有効なアカウント）のアドレス。送信者が画面で外せる。
+  ccDefaults: notViewerProcedure.query(async () => {
+    const rows = await db
+      .select({ email: users.email })
+      .from(users)
+      .where(
+        and(
+          inArray(users.role, ["admin", "accounting"]),
+          eq(users.status, "active")
+        )
+      )
+      .orderBy(asc(users.id));
+    return rows.map((r) => r.email);
+  }),
 
   list: adminProcedure.query(() =>
     db
@@ -36,10 +57,40 @@ export const usersRouter = createTRPCRouter({
         role: users.role,
         status: users.status,
         createdAt: users.createdAt,
+        emailSignature: users.emailSignature,
       })
       .from(users)
       .orderBy(asc(users.id))
   ),
+
+  // アカウントごとのメール署名（管理者が登録。送信時にログインユーザーの署名が自動で付く）
+  updateEmailSignature: adminProcedure
+    .input(
+      z.object({
+        id: z.number().int(),
+        emailSignature: z.string().max(2000),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const before = await db.query.users.findFirst({
+        where: eq(users.id, input.id),
+      });
+      if (!before || before.status === "deleted") {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "ユーザーが見つかりません",
+        });
+      }
+      await db
+        .update(users)
+        .set({ emailSignature: input.emailSignature.trim() || null })
+        .where(eq(users.id, input.id));
+      await logAudit(ctx.user.id, "UPDATE", "users", input.id, {
+        name: before.name || before.email,
+        changes: ["メール署名を変更"],
+      });
+      return { success: true };
+    }),
 
   // 権限変更・一時停止/再開。自分自身は対象外（誤操作でロックアウトしないため）
   updateRoleStatus: adminProcedure
@@ -66,10 +117,11 @@ export const usersRouter = createTRPCRouter({
           message: "ユーザーが見つかりません",
         });
       }
-      if (before.status === "deleted") {
+      // 以前の「削除」で削除済みになったアカウントは、停止中と同じ扱い。再開（有効に戻す）だけできる
+      if (before.status === "deleted" && input.status !== "active") {
         throw new TRPCError({
           code: "BAD_REQUEST",
-          message: "削除済みのアカウントは変更できません",
+          message: "このアカウントは停止中です。再開してから変更してください",
         });
       }
       const role = input.role === undefined ? before.role : input.role;
@@ -97,12 +149,12 @@ export const usersRouter = createTRPCRouter({
       const changes: string[] = [];
       if (input.role !== undefined && role !== before.role) {
         changes.push(
-          `権限変更: ${ROLE_LABELS[before.role ?? ""] || before.role} → ${ROLE_LABELS[role ?? ""] || role}`
+          `権限変更: ${ROLE_LABEL_MAP[before.role ?? ""] || before.role} → ${ROLE_LABEL_MAP[role ?? ""] || role}`
         );
       }
       if (input.status !== undefined && status !== before.status) {
         changes.push(
-          `ステータス変更: ${before.status || "active"} → ${status}`
+          `ステータス変更: ${statusLabel(before.status)} → ${statusLabel(status)}`
         );
       }
       if (changes.length > 0) {
@@ -113,38 +165,11 @@ export const usersRouter = createTRPCRouter({
       }
       return { id: input.id, role, status };
     }),
-
-  // ソフトデリート。audit_logs.user_id の外部キー制約があるため物理削除はしない
-  delete: adminProcedure
-    .input(z.object({ id: z.number() }))
-    .mutation(async ({ ctx, input }) => {
-      if (input.id === ctx.user.id) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "自分自身のアカウントは削除できません",
-        });
-      }
-      const before = await db.query.users.findFirst({
-        where: eq(users.id, input.id),
-      });
-      if (!before) {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: "ユーザーが見つかりません",
-        });
-      }
-      await db
-        .update(users)
-        .set({
-          status: "deleted",
-          tokenVersion: sql`${users.tokenVersion} + 1`,
-          updatedAt: new Date(),
-        })
-        .where(eq(users.id, input.id));
-      await logAudit(ctx.user.id, "DELETE", "users", input.id, {
-        name: before.name || before.email,
-        changes: [`アカウント削除（${before.email}）`],
-      });
-      return { success: true };
-    }),
 });
+
+/** アカウントの状態の表示名（履歴用）。 */
+function statusLabel(status: string | null | undefined): string {
+  return status === "suspended" || status === "deleted"
+    ? "停止"
+    : "有効（再開）";
+}

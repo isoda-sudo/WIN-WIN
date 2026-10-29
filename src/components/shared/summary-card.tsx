@@ -1,7 +1,7 @@
 import { Card, CardContent, CardHeader, CardTitle } from "~/components/ui/card";
 
 /**
- * 月間サマリの数値カード（売上・入金管理／支払管理で共通利用）。
+ * 月間サマリの数値カード（売上管理表／支払管理で共通利用）。
  * 工事計画詳細のサマリカード（売上高カード）と同じスタイルに揃える
  * （text-xs uppercase tracking-wideのラベル、CardContent直下に値、
  * 色付きアクセントなし）。

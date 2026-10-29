@@ -94,12 +94,12 @@ function AcceptInviteForm() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ token, password }),
       });
-      const data = (await res.json()) as { error?: string };
+      const data = (await res.json()) as { error?: string; next?: string };
       if (!res.ok) {
         setError(data.error ?? "登録に失敗しました");
         return;
       }
-      router.push("/reporting");
+      router.push(data.next ?? "/reporting");
       router.refresh();
     } catch {
       setError("エラーが発生しました");

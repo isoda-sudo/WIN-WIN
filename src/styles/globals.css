@@ -229,3 +229,15 @@
   background-color: var(--border);
   border-radius: 9999px;
 }
+
+/* 数値入力のスピンボタン（▲▼）は全画面で廃止し、キーボード入力のみにする */
+input[type="number"]::-webkit-inner-spin-button,
+input[type="number"]::-webkit-outer-spin-button {
+  margin: 0;
+  -webkit-appearance: none;
+  appearance: none;
+}
+input[type="number"] {
+  -moz-appearance: textfield;
+  appearance: textfield;
+}

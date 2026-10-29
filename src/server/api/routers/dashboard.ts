@@ -1,13 +1,39 @@
-import { eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, ne, or } from "drizzle-orm";
 import { z } from "zod";
+import { jstDateParts } from "~/lib/fiscal-period";
 import {
-  accountingOrAdminProcedure,
+  contractNotSignedAlerts,
+  filterNotificationsForRole,
+  invoiceLeakAlerts,
+  irregularPaymentDateAlerts,
+  lockLeakAlerts,
+  type NotificationItem,
+  notificationKey,
+  orderNotIssuedAlerts,
+  type RuleOrder,
+  type RuleProject,
+} from "~/lib/notification-rules";
+import {
+  FULLY_PAID_PROJECT_STATUS,
+  INVOICE_ISSUED_PROJECT_STATUS,
+  PARTIAL_PAID_PROJECT_STATUS,
+} from "~/lib/pay-status";
+import {
+  excludeBySupersededProject,
+  excludeSupersededProjects,
+  SUPERSEDED_STATUS,
+  supersededProjectIds,
+} from "~/lib/superseded";
+import {
   createTRPCRouter,
+  masterReadableProcedure,
   reportingProcedure,
 } from "~/server/api/trpc";
 import { db } from "~/server/db";
 import {
   type invoices,
+  notificationOpens,
+  orderFiles,
   type orders,
   projectFiles,
   projects,
@@ -16,6 +42,21 @@ import {
 type OrderRow = typeof orders.$inferSelect;
 type ProjectRow = typeof projects.$inferSelect;
 type InvoiceRow = typeof invoices.$inferSelect;
+
+/** オーダー移行（コピー元）案件のIDを取得する。発注・請求書の集計から除外するために使う。 */
+async function loadSupersededIds(): Promise<Set<number>> {
+  const rows = await db
+    .select({ id: projects.id })
+    .from(projects)
+    .where(eq(projects.status, SUPERSEDED_STATUS));
+  return new Set(rows.map((r) => r.id));
+}
+
+/** 非削除かつオーダー移行（コピー元）でない案件のみ（集計・通知の対象）。 */
+const activeProjectWhere = and(
+  isNull(projects.deletedAt),
+  or(isNull(projects.status), ne(projects.status, SUPERSEDED_STATUS))
+);
 
 // ============ 共通の日付ヘルパー（server.js のロジックをそのまま移植） ============
 
@@ -71,65 +112,38 @@ function parseD(s: string | null | undefined): Date | null {
  * 請求書の入金期日チェックのみ事前チェック無し＝server.js:1627）をそのまま再現するため、
  * この関数自体では null/undefined を弾かない。
  */
+const DAY_PARTS_RE = /^(\d{4})-(\d{1,2})-(\d{1,2})/;
+
 function daysBetween(
   value: string | null | undefined,
-  today: Date
+  todayJstMidnight: Date
 ): number | null {
-  const t = value == null ? new Date(0) : new Date(value);
+  let t: Date;
+  if (value == null) {
+    t = new Date(0);
+  } else {
+    // 日付部分（YYYY-MM-DD、"/"区切りも可）は、日本の暦日としてUTC0時で比べる。
+    // new Date("YYYY-MM-DD") だけに頼ると、時刻ずれで期日当日の午前に「期限超過」とならない。
+    const text = String(value).replaceAll("/", "-");
+    const m = DAY_PARTS_RE.exec(text);
+    t = m
+      ? new Date(Date.UTC(Number(m[1]), Number(m[2]) - 1, Number(m[3])))
+      : new Date(text);
+  }
   if (Number.isNaN(t.getTime())) {
     return null;
   }
-  return Math.ceil((t.getTime() - today.getTime()) / 86_400_000);
+  return Math.ceil((t.getTime() - todayJstMidnight.getTime()) / 86_400_000);
 }
 
 // ============ 通知一覧（/api/notifications 相当） ============
 
-type NotificationLevel = "error" | "warning" | "info";
+type DashboardNotification = NotificationItem;
 
-interface DashboardNotification {
-  assignee?: string | null;
-  date: string | null;
-  icon: string;
-  keyword: string | null;
-  level: NotificationLevel;
-  link: string;
-  message: string;
-  title: string;
-  type: "payment" | "receipt" | "missing" | "contract";
-}
-
-function sumAmountByProjectId<T>(
-  rows: T[],
-  getProjectId: (row: T) => number | null,
-  getAmount: (row: T) => number | null
-): Map<number, number> {
-  const sums = new Map<number, number>();
-  for (const row of rows) {
-    const projectId = getProjectId(row);
-    if (projectId == null) {
-      continue;
-    }
-    sums.set(
-      projectId,
-      (sums.get(projectId) || 0) + (Number(getAmount(row)) || 0)
-    );
-  }
-  return sums;
-}
-
-function countByProjectId<T>(
-  rows: T[],
-  getProjectId: (row: T) => number | null
-): Map<number, number> {
-  const counts = new Map<number, number>();
-  for (const row of rows) {
-    const projectId = getProjectId(row);
-    if (projectId == null) {
-      continue;
-    }
-    counts.set(projectId, (counts.get(projectId) || 0) + 1);
-  }
-  return counts;
+/** 日本時間の今日（YYYY-MM-DD）。 */
+function todayJstDateString(): string {
+  const { day, month, year } = jstDateParts();
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
 
 /**
@@ -158,23 +172,14 @@ function paymentDueNotifications(
     if (d < 0) {
       notifications.push({
         type: "payment",
+        audience: "finance",
         level: "error",
         icon: "error",
         title: "支払期日超過",
         message: `${o.vendor} への支払（${o.category}）が${Math.abs(d)}日超過しています`,
         date: o.paymentDate,
-        link: "/payment",
-        keyword: String(o.id),
-        assignee: o.assignee || null,
-      });
-    } else if (d <= 7) {
-      notifications.push({
-        type: "payment",
-        level: "warning",
-        icon: "schedule",
-        title: "支払期日接近",
-        message: `${o.vendor} への支払（${o.category}）まであと${d}日です`,
-        date: o.paymentDate,
+        focus: [`order-${o.id}`],
+        focusMonth: o.paymentDate.slice(0, 7),
         link: "/payment",
         keyword: String(o.id),
         assignee: o.assignee || null,
@@ -185,232 +190,198 @@ function paymentDueNotifications(
 }
 
 /**
- * 入金期日アラート（請求書の未入金残ベース）。keywordは案件名ではなく案件の# (id) を使う：
- * 引渡月変更で複製された案件は同名になるため、名前だと検索時に複数ヒットしてしまい対象を
- * 一意に絞り込めない。
+ * 入金期日アラート。期日を過ぎた未入金だけを通知する（期日が近いだけでは通知しない）。案件が全額入金済みなら対象外。
+ * 通知の単位は2つ:
+ * - 売上管理表単位: 売上管理表の行（案件ごと。入金期日は最後の請求書）の入金期日が過ぎた
+ * - 請求書単位: 売上管理表の行の請求書以外（分割請求の、最後より前の請求書）の入金期日が過ぎた。
+ *   ステータスが「分割入金済み」の案件は、最後より前の請求書は入金済みとみなして通知しない
+ * 同じ期日の同じものを二重に通知しないよう、最後の請求書は売上管理表単位でのみ通知する。
+ * 引渡月変更で複製された案件は同名になるため、識別は案件のid（名前では一意にならない）。
  */
 function receiptDueNotificationFor(
   inv: InvoiceRow,
   project: ProjectRow | undefined,
-  receiptSumByProject: Map<number, number>,
-  today: Date
+  today: Date,
+  unit: "invoice" | "sheet"
 ): DashboardNotification | null {
-  const received =
-    (inv.projectId == null ? 0 : receiptSumByProject.get(inv.projectId)) || 0;
-  const outstanding = (Number(inv.total) || 0) - received;
+  const outstanding = Number(inv.total) || 0;
   if (outstanding <= 0) {
     return null;
   }
   const d = daysBetween(inv.dueDate, today);
-  if (d === null) {
+  if (d === null || d >= 0) {
     return null;
   }
   const yen = `¥${outstanding.toLocaleString()}`;
   const projectLabel = project ? project.name : "案件";
-  const keyword = project ? String(project.id) : null;
-  if (d < 0) {
-    return {
-      type: "receipt",
-      level: "error",
-      icon: "error",
-      title: "入金期日超過（未入金）",
-      message: `${projectLabel}（${inv.invoiceNo}）の入金期日が${Math.abs(d)}日超過・未入金残 ${yen}`,
-      date: inv.dueDate,
-      link: "/receipts",
-      keyword,
-    };
+  const sheet = unit === "sheet";
+  return {
+    type: "receipt",
+    audience: "finance",
+    level: "error",
+    icon: "error",
+    title: sheet ? "入金期日超過（売上管理表）" : "入金期日超過（請求書）",
+    message: sheet
+      ? `${projectLabel}（${inv.invoiceNo}）の入金期日が${Math.abs(d)}日超過・未入金額 ${yen}`
+      : `${projectLabel}の請求書 ${inv.invoiceNo} の入金期日が${Math.abs(d)}日超過・未入金額 ${yen}`,
+    date: inv.dueDate,
+    focus: project ? [`project-${project.id}`] : [],
+    focusMonth: inv.dueDate ? inv.dueDate.slice(0, 7) : null,
+    link: "/receipts",
+    // 同じ期日の請求書が複数あっても識別が重ならないよう、請求書のidまで含める
+    keyword: project ? `${project.id}.${inv.id}` : null,
+  };
+}
+
+/** 案件ごとの請求書（請求書のid昇順）。 */
+function groupInvoicesByProject(
+  allInvoices: InvoiceRow[]
+): Map<number, InvoiceRow[]> {
+  const byProject = new Map<number, InvoiceRow[]>();
+  for (const inv of allInvoices) {
+    if (inv.projectId != null) {
+      byProject.set(inv.projectId, [
+        ...(byProject.get(inv.projectId) ?? []),
+        inv,
+      ]);
+    }
   }
-  if (d <= 7) {
-    return {
-      type: "receipt",
-      level: "warning",
-      icon: "schedule",
-      title: "入金期日接近",
-      message: `${projectLabel}（${inv.invoiceNo}）の入金期日まであと${d}日・未入金残 ${yen}`,
-      date: inv.dueDate,
-      link: "/receipts",
-      keyword,
-    };
+  for (const list of byProject.values()) {
+    list.sort((a, b) => a.id - b.id);
   }
-  return null;
+  return byProject;
+}
+
+/** 1案件の請求書から、売上管理表単位・請求書単位の入金期日超過の通知を作る。 */
+function receiptNotificationsForProject(
+  invoicesOfProject: InvoiceRow[],
+  project: ProjectRow | undefined,
+  today: Date
+): DashboardNotification[] {
+  const lastId = invoicesOfProject.at(-1)?.id;
+  // 分割入金済みは、最後より前の請求書は入金済みとみなす
+  const partial = project?.status === PARTIAL_PAID_PROJECT_STATUS;
+  const out: DashboardNotification[] = [];
+  for (const inv of invoicesOfProject) {
+    const sheet = inv.id === lastId;
+    if (!(sheet || partial)) {
+      out.push(
+        ...toList(receiptDueNotificationFor(inv, project, today, "invoice"))
+      );
+    } else if (sheet) {
+      out.push(
+        ...toList(receiptDueNotificationFor(inv, project, today, "sheet"))
+      );
+    }
+  }
+  return out;
+}
+
+function toList<T>(v: T | null): T[] {
+  return v ? [v] : [];
 }
 
 function receiptDueNotifications(
   allInvoices: InvoiceRow[],
   projectById: Map<number, ProjectRow>,
-  receiptSumByProject: Map<number, number>,
   today: Date
 ): DashboardNotification[] {
   const notifications: DashboardNotification[] = [];
-  for (const inv of allInvoices) {
-    const project =
-      inv.projectId == null ? undefined : projectById.get(inv.projectId);
-    const notification = receiptDueNotificationFor(
-      inv,
-      project,
-      receiptSumByProject,
-      today
-    );
-    if (notification) {
-      notifications.push(notification);
-    }
-  }
-  return notifications;
-}
-
-function missingInvoiceNotifications(
-  wonProjects: ProjectRow[],
-  invoiceCountByProject: Map<number, number>
-): DashboardNotification[] {
-  const notifications: DashboardNotification[] = [];
-  for (const p of wonProjects) {
-    if (!invoiceCountByProject.get(p.id)) {
-      notifications.push({
-        type: "missing",
-        level: "info",
-        icon: "description",
-        title: "請求書未発行",
-        message: `${p.name} は受注済みですが請求書が未発行です`,
-        date: null,
-        link: "/projects",
-        keyword: String(p.id),
-      });
-    }
-  }
-  return notifications;
-}
-
-/**
- * 担当者ベースのタスク通知（担当者ごとに個別表示。議事録論点）。
- * ステータスがNULLの明細はSQLの `status NOT IN (...)` と同様に除外する（三値論理の再現）。
- */
-function undeliveredOrderNotifications(
-  allOrders: OrderRow[]
-): DashboardNotification[] {
-  const undelivered = allOrders.filter(
-    (o) =>
-      o.status != null &&
-      o.status !== "発注完了" &&
-      o.status !== "支払済み" &&
-      (Number(o.decided) || 0) > 0
-  );
-  if (undelivered.length === 0) {
-    return [];
-  }
-  const byAssignee = new Map<string, number>();
-  for (const o of undelivered) {
-    const key = o.assignee || "";
-    byAssignee.set(key, (byAssignee.get(key) || 0) + 1);
-  }
-  const notifications: DashboardNotification[] = [];
-  for (const [assignee, cnt] of byAssignee) {
-    notifications.push({
-      type: "missing",
-      level: "info",
-      icon: "receipt_long",
-      title: "注文書未発行",
-      message: assignee
-        ? `${assignee}さん担当で決定済み・注文書未発行の明細が${cnt}件あります`
-        : `担当者未設定で決定済み・注文書未発行の明細が${cnt}件あります`,
-      date: null,
-      link: "/projects",
-      keyword: null,
-      assignee: assignee || null,
-    });
-  }
-  return notifications;
-}
-
-/** 契約書未締結アラート（議事録決定事項：着工日超過で未締結ならアラート） */
-function contractMissingNotifications(
-  contractCheckProjects: ProjectRow[],
-  projectsWithContract: Set<number | null>,
-  today: Date
-): DashboardNotification[] {
-  const notifications: DashboardNotification[] = [];
-  for (const p of contractCheckProjects) {
-    const d = daysBetween(p.startDate, today);
-    if (d === null || d >= 0) {
-      continue; // 着工日が未到来の案件は対象外
-    }
-    if (!projectsWithContract.has(p.id)) {
-      notifications.push({
-        type: "contract",
-        level: "error",
-        icon: "error",
-        title: "契約書未締結",
-        message: `${p.name} は着工日を${Math.abs(d)}日超過していますが契約書が未締結です`,
-        date: p.startDate,
-        link: "/projects",
-        keyword: String(p.id),
-      });
+  for (const [projectId, list] of groupInvoicesByProject(allInvoices)) {
+    const project = projectById.get(projectId);
+    if (project?.status !== FULLY_PAID_PROJECT_STATUS) {
+      notifications.push(
+        ...receiptNotificationsForProject(list, project, today)
+      );
     }
   }
   return notifications;
 }
 
 async function buildNotifications(): Promise<DashboardNotification[]> {
-  const today = new Date();
+  // 日本時間の今日（暦日）。日付の差は、この日のUTC0時を基準に整数日で数える。
+  const todayJst = todayJstDateString();
+  const today = new Date(`${todayJst}T00:00:00Z`);
 
   // 案件・請求書数に比例したループ内SELECT（N+1）を避けるため、必要な集計を先に一括取得する
-  const [
-    allOrders,
-    allInvoices,
-    allProjectsForNotif,
-    allReceipts,
-    contractFiles,
-  ] = await Promise.all([
-    db.query.orders.findMany(),
-    db.query.invoices.findMany(),
-    db.query.projects.findMany(),
-    db.query.receipts.findMany(),
-    db.query.projectFiles.findMany({
-      where: eq(projectFiles.kind, "contract"),
-    }),
-  ]);
+  // オーダー移行（コピー元）案件は通知対象外。発注・請求書もコピー先に集約されているため除く。
+  const [rawOrders, rawInvoices, rawProjectsForNotif, contractFiles, ackFiles] =
+    await Promise.all([
+      db.query.orders.findMany(),
+      db.query.invoices.findMany(),
+      db.query.projects.findMany(),
+      // 契約書は有無（案件ID）だけが必要。data_url（PDF本体のbase64）は読み込まない。
+      db
+        .select({ projectId: projectFiles.projectId })
+        .from(projectFiles)
+        .where(eq(projectFiles.kind, "contract")),
+      db
+        .select({ orderId: orderFiles.orderId })
+        .from(orderFiles)
+        .where(eq(orderFiles.kind, "ack")),
+    ]);
+  const supersededIds = supersededProjectIds(rawProjectsForNotif);
+  // 削除済みの案件に紐づく発注・請求書も、通知の対象外にする（案件の通知と揃える）
+  const deletedIds = new Set(
+    rawProjectsForNotif.filter((p) => p.deletedAt !== null).map((p) => p.id)
+  );
+  const allOrders = excludeBySupersededProject(rawOrders, supersededIds).filter(
+    (o) => !deletedIds.has(o.projectId)
+  );
+  const allInvoices = rawInvoices.filter(
+    (inv) =>
+      inv.projectId == null ||
+      !(supersededIds.has(inv.projectId) || deletedIds.has(inv.projectId))
+  );
+  const allProjectsForNotif = excludeSupersededProjects(rawProjectsForNotif);
 
   const projectByIdForNotif = new Map(
     allProjectsForNotif.map((p) => [p.id, p])
   );
-  const receiptSumByProject = sumAmountByProjectId(
-    allReceipts,
-    (r) => r.projectId,
-    (r) => r.amount
-  );
-  const invoiceCountByProject = countByProjectId(
-    allInvoices,
-    (inv) => inv.projectId
-  );
-  const wonProjects = allProjectsForNotif.filter(
-    (p) => p.deletedAt === null && p.status === "受注"
-  );
-  const contractCheckProjects = allProjectsForNotif.filter(
-    (p) => p.deletedAt === null && p.startDate != null
-  );
-  const projectsWithContract = new Set(contractFiles.map((f) => f.projectId));
+  const contractedProjectIds = new Set(contractFiles.map((f) => f.projectId));
+  const ruleProjects: RuleProject[] = allProjectsForNotif
+    .filter((p) => p.deletedAt === null)
+    .map((p) => ({
+      deliveryMonth: p.deliveryMonth,
+      endDate: p.endDate,
+      hasContract: contractedProjectIds.has(p.id),
+      id: p.id,
+      lockedAt: p.lockedAt,
+      name: p.name,
+      startDate: p.startDate,
+      status: p.status,
+    }));
+  const ruleProjectById = new Map(ruleProjects.map((p) => [p.id, p]));
+  const ruleOrders: RuleOrder[] = allOrders.map((o) => ({
+    assignee: o.assignee,
+    decided: o.decided,
+    id: o.id,
+    paid: o.paymentStatus === "支払済み",
+    payment: o.payment,
+    paymentDate: o.paymentDate,
+    periodEnd: o.periodEnd,
+    periodStart: o.periodStart,
+    projectId: o.projectId,
+    status: o.status,
+    vendor: o.vendor,
+  }));
+  const ackOrderIds = new Set(ackFiles.map((f) => f.orderId));
 
   const notifications: DashboardNotification[] = [
     ...paymentDueNotifications(allOrders, today),
-    ...receiptDueNotifications(
-      allInvoices,
-      projectByIdForNotif,
-      receiptSumByProject,
-      today
-    ),
-    ...missingInvoiceNotifications(wonProjects, invoiceCountByProject),
-    ...undeliveredOrderNotifications(allOrders),
-    ...contractMissingNotifications(
-      contractCheckProjects,
-      projectsWithContract,
-      today
-    ),
+    ...receiptDueNotifications(allInvoices, projectByIdForNotif, today),
+    ...contractNotSignedAlerts(ruleProjects, todayJst),
+    ...orderNotIssuedAlerts(ruleOrders, ruleProjectById, ackOrderIds, todayJst),
+    ...invoiceLeakAlerts(ruleProjects, todayJst),
+    ...irregularPaymentDateAlerts(ruleOrders, ruleProjectById),
+    ...lockLeakAlerts(ruleProjects, todayJst),
   ];
 
   // server.js の /api/notifications には上記の実データ通知に加え、実データと無関係な
   // 固定20件の「デモ用テスト通知」（server.js:1676-1718、案件名・発注先名も本移行後のダミー値と
   // 不一致）が付加されていたが、実データを表す通知ではないため本移植では意図的に省略する。
 
-  const order: Record<NotificationLevel, number> = {
+  const order: Record<NotificationItem["level"], number> = {
     error: 0,
     warning: 1,
     info: 2,
@@ -421,14 +392,21 @@ async function buildNotifications(): Promise<DashboardNotification[]> {
 
 // ============ ダッシュボード サマリ（/api/dashboard 相当） ============
 
-const RECEIVABLE_STATUSES = ["受注", "請求発行", "半金入金", "入金済"];
+// 未回収の対象＝契約済み以降で、まだ全額入金済みになっていない案件。入金額は手入力せず
+// 入金ステータスから導出するため、未回収額は契約金額そのもの。
+const RECEIVABLE_STATUSES = [
+  "受注",
+  INVOICE_ISSUED_PROJECT_STATUS,
+  PARTIAL_PAID_PROJECT_STATUS,
+];
 
 async function buildDashboardSummary() {
-  const [allProjects, allOrders, allReceipts] = await Promise.all([
-    db.query.projects.findMany({ where: isNull(projects.deletedAt) }),
+  const [allProjects, rawOrders, supersededIds] = await Promise.all([
+    db.query.projects.findMany({ where: activeProjectWhere }),
     db.query.orders.findMany(),
-    db.query.receipts.findMany(),
+    loadSupersededIds(),
   ]);
+  const allOrders = excludeBySupersededProject(rawOrders, supersededIds);
   const now = new Date();
   const ym = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
   const monthStart = new Date(now.getFullYear(), now.getMonth(), 1);
@@ -452,13 +430,7 @@ async function buildDashboardSummary() {
   let totalReceivable = 0;
   for (const p of activeProjects) {
     if (RECEIVABLE_STATUSES.includes(p.status ?? "")) {
-      const received = allReceipts
-        .filter((r) => r.projectId === p.id)
-        .reduce((s, r) => s + (Number(r.amount) || 0), 0);
-      const outstanding = (Number(p.amount) || 0) - received;
-      if (outstanding > 0) {
-        totalReceivable += outstanding;
-      }
+      totalReceivable += Math.max(0, Number(p.amount) || 0);
     }
   }
   const totalPayable = allOrders
@@ -470,7 +442,9 @@ async function buildDashboardSummary() {
   // 翌月の年月
   const nd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
   const nextYm = `${nd.getFullYear()}-${String(nd.getMonth() + 1).padStart(2, "0")}`;
-  const allInvoices = await db.query.invoices.findMany();
+  const allInvoices = (await db.query.invoices.findMany()).filter(
+    (inv) => inv.projectId == null || !supersededIds.has(inv.projectId)
+  );
 
   // 当月売上・当月利益（売上＝工期開始月の契約金額、利益＝売上−注文確定額）
   const monthRevProjects = allProjects.filter(
@@ -504,19 +478,15 @@ async function buildDashboardSummary() {
   const thisMonthPayments = paySum(ym);
   const nextMonthPayments = paySum(nextYm);
 
-  // 未入金総金額＝（請求済み総額 − 入金済み総額）の正値合計（案件単位）
+  // 未入金総金額＝全額入金済みでない案件の請求済み総額の合計（案件単位）
   let totalUnpaid = 0;
   for (const p of allProjects) {
-    const billed = allInvoices
+    if (p.status === FULLY_PAID_PROJECT_STATUS) {
+      continue;
+    }
+    totalUnpaid += allInvoices
       .filter((i) => i.projectId === p.id)
       .reduce((s, i) => s + (Number(i.total) || 0), 0);
-    const received = allReceipts
-      .filter((r) => r.projectId === p.id)
-      .reduce((s, r) => s + (Number(r.amount) || 0), 0);
-    const outstanding = billed - received;
-    if (outstanding > 0) {
-      totalUnpaid += outstanding;
-    }
   }
 
   const projectProfit = activeProjects.map((p) => {
@@ -608,10 +578,12 @@ export async function getGrowthReportData(
     from = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
   }
 
-  const [projectRows, orderRows] = await Promise.all([
-    db.query.projects.findMany({ where: isNull(projects.deletedAt) }),
+  const [projectRows, rawOrderRows, supersededIds] = await Promise.all([
+    db.query.projects.findMany({ where: activeProjectWhere }),
     db.query.orders.findMany(),
+    loadSupersededIds(),
   ]);
+  const orderRows = excludeBySupersededProject(rawOrderRows, supersededIds);
 
   const projMonth = new Map<number, string | null>();
   const map = new Map<string, { revenue: number; cost: number }>();
@@ -963,10 +935,12 @@ function buildReportGroups(
 export async function getAnalysisReportData(
   input: AnalysisReportInput
 ): Promise<AnalysisReportData> {
-  const [allProjects, allOrders] = await Promise.all([
-    db.query.projects.findMany({ where: isNull(projects.deletedAt) }),
+  const [allProjects, rawOrders, supersededIds] = await Promise.all([
+    db.query.projects.findMany({ where: activeProjectWhere }),
     db.query.orders.findMany(),
+    loadSupersededIds(),
   ]);
+  const allOrders = excludeBySupersededProject(rawOrders, supersededIds);
   const projectById = new Map(allProjects.map((p) => [p.id, p]));
   const { dateStart, dateEnd } = resolvePeriodRange(
     input.dateStart,
@@ -1003,7 +977,38 @@ export async function getAnalysisReportData(
 }
 
 export const dashboardRouter = createTRPCRouter({
-  notifications: accountingOrAdminProcedure.query(() => buildNotifications()),
+  // 通知は、ロールごとに見られるものだけを返す（売上・支払い・確定ロックは管理者・経理限定）
+  notifications: masterReadableProcedure.query(async ({ ctx }) => {
+    const [all, opened] = await Promise.all([
+      buildNotifications(),
+      db
+        .select({ key: notificationOpens.notifKey })
+        .from(notificationOpens)
+        .where(eq(notificationOpens.userId, ctx.user.id)),
+    ]);
+    const openedKeys = new Set(opened.map((o) => o.key));
+    // 開封状態はユーザーごとにサーバーへ保存する（端末が変わっても引き継がれる）
+    return filterNotificationsForRole(all, ctx.user.role).map((n) => {
+      const key = notificationKey(n);
+      return { ...n, key, opened: openedKeys.has(key) };
+    });
+  }),
+
+  // 通知を開封済みにする（個別・すべて開封の両方）。キーは notifications の key。
+  openNotifications: masterReadableProcedure
+    .input(z.object({ keys: z.array(z.string().max(400)).min(1).max(1000) }))
+    .mutation(async ({ ctx, input }) => {
+      await db
+        .insert(notificationOpens)
+        .values(
+          [...new Set(input.keys)].map((notifKey) => ({
+            notifKey,
+            userId: ctx.user.id,
+          }))
+        )
+        .onConflictDoNothing();
+      return { success: true };
+    }),
 
   summary: reportingProcedure.query(() => buildDashboardSummary()),
 

@@ -10,17 +10,19 @@ declare global {
 }
 globalThis.vi = vitestVi;
 
-// Mock window.matchMedia
-Object.defineProperty(window, "matchMedia", {
-  writable: true,
-  value: vitestVi.fn().mockImplementation((query) => ({
-    matches: false,
-    media: query,
-    onchange: null,
-    addListener: vitestVi.fn(),
-    removeListener: vitestVi.fn(),
-    addEventListener: vitestVi.fn(),
-    removeEventListener: vitestVi.fn(),
-    dispatchEvent: vitestVi.fn(),
-  })),
-});
+// Mock window.matchMedia (skipped in `@vitest-environment node` server tests)
+if (typeof window !== "undefined") {
+  Object.defineProperty(window, "matchMedia", {
+    writable: true,
+    value: vitestVi.fn().mockImplementation((query) => ({
+      matches: false,
+      media: query,
+      onchange: null,
+      addListener: vitestVi.fn(),
+      removeListener: vitestVi.fn(),
+      addEventListener: vitestVi.fn(),
+      removeEventListener: vitestVi.fn(),
+      dispatchEvent: vitestVi.fn(),
+    })),
+  });
+}

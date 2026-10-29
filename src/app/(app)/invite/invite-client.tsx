@@ -3,8 +3,26 @@
 import { Copy, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
+import { LoadMore } from "~/components/shared/load-more";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "~/components/ui/alert-dialog";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
+import {
+  Dialog,
+  DialogContent,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "~/components/ui/dialog";
 import { Input } from "~/components/ui/input";
 import { Label } from "~/components/ui/label";
 import { RadioGroup, RadioGroupItem } from "~/components/ui/radio-group";
@@ -24,37 +42,40 @@ import {
   TableHeader,
   TableRow,
 } from "~/components/ui/table";
+import { Textarea } from "~/components/ui/textarea";
+import type { SortOption } from "~/lib/list-sort";
+import { ROLE_LABELS, ROLES, type Role } from "~/lib/roles";
 import { friendlyErrorMessage } from "~/lib/trpc-error";
+import { useSortedPagedList } from "~/lib/use-sorted-paged-list";
 import { api, type RouterOutputs } from "~/trpc/react";
 
 type InviteResult = RouterOutputs["invitations"]["create"];
 type Account = RouterOutputs["users"]["list"][number];
 
-const ROLE_OPTIONS = [
-  {
-    value: "admin",
-    label: "管理者",
-    description: "全機能・アカウント発行が可能",
-  },
-  { value: "accounting", label: "経理部", description: "請求/支払/入金の管理" },
-  {
-    value: "staff",
-    label: "一般社員",
-    description: "案件/工事計画の閲覧/操作",
-  },
-  {
-    value: "viewer",
-    label: "一般社員（閲覧のみ）",
-    description: "受注一覧/工事計画・各種マスタ・レポーティングの閲覧のみ",
-  },
-] as const;
+const ROLE_DESCRIPTIONS: Record<Role, string> = {
+  admin: "全機能・アカウント発行が可能",
+  accounting: "請求/支払/入金の管理",
+  staff: "案件/工事計画の閲覧/操作",
+  viewer: "受注一覧/工事計画・各種マスタ・レポーティングの閲覧のみ",
+  tax_advisor:
+    "受注一覧/工事計画/売上管理表/支払い予定表/レポーティングの閲覧のみ（マスタ設定・顧客個人情報は閲覧不可）",
+};
 
-const USER_ROLE_OPTIONS = [
-  { value: "admin", label: "管理者" },
-  { value: "accounting", label: "経理部" },
-  { value: "staff", label: "一般社員" },
-  { value: "viewer", label: "一般社員（閲覧のみ）" },
-] as const;
+/** サーバーの並びをそのまま使う（stable sort のため 0 を返す）。 */
+const KEEP_ORDER: readonly SortOption<unknown>[] = [
+  { compare: () => 0, label: "並び順", value: "order" },
+];
+
+const ROLE_OPTIONS = ROLES.map((value) => ({
+  value,
+  label: ROLE_LABELS[value],
+  description: ROLE_DESCRIPTIONS[value],
+}));
+
+const USER_ROLE_OPTIONS = ROLES.map((value) => ({
+  value,
+  label: ROLE_LABELS[value],
+}));
 
 const KNOWN_ROLES: Set<string> = new Set(USER_ROLE_OPTIONS.map((o) => o.value));
 
@@ -97,6 +118,30 @@ export default function InviteClient({
     api.invitations.list.useQuery();
   const { data: accounts, isLoading: accountsLoading } =
     api.users.list.useQuery();
+  const mfaEnabled = api.mfa.adminEnabledUserIds.useQuery();
+  const [mfaResetTarget, setMfaResetTarget] = useState<Account | null>(null);
+  const resetMfaMutation = api.mfa.adminReset.useMutation({
+    onSuccess: async ({ reset }) => {
+      setMfaResetTarget(null);
+      await utils.mfa.adminEnabledUserIds.invalidate();
+      toast.success(
+        reset
+          ? "2段階認証をリセットしました"
+          : "2段階認証は設定されていませんでした"
+      );
+    },
+    onError: (err) =>
+      toast.error(friendlyErrorMessage(err, "リセットに失敗しました")),
+  });
+  // サーバーの並びのまま20件ずつ表示する
+  const invitationsPaged = useSortedPagedList({
+    options: KEEP_ORDER,
+    rows: invitations ?? [],
+  });
+  const accountsPaged = useSortedPagedList({
+    options: KEEP_ORDER,
+    rows: accounts ?? [],
+  });
 
   const createMutation = api.invitations.create.useMutation({
     onSuccess: async (data) => {
@@ -127,15 +172,6 @@ export default function InviteClient({
     },
     onError: (err) =>
       toast.error(friendlyErrorMessage(err, "更新に失敗しました")),
-  });
-
-  const deleteUserMutation = api.users.delete.useMutation({
-    onSuccess: async () => {
-      await utils.users.list.invalidate();
-      toast.success("アカウントを削除しました");
-    },
-    onError: (err) =>
-      toast.error(friendlyErrorMessage(err, "削除に失敗しました")),
   });
 
   const submitInvite = () => {
@@ -260,7 +296,7 @@ export default function InviteClient({
         <div className="flex flex-col gap-4 rounded-md border p-4">
           <h2 className="font-semibold text-lg">発行済み招待</h2>
           <div className="overflow-x-auto rounded-md border">
-            <Table>
+            <Table className="text-xs [&_td]:px-1 [&_th]:px-1">
               <TableHeader>
                 <TableRow>
                   <TableHead>メール/氏名</TableHead>
@@ -274,7 +310,7 @@ export default function InviteClient({
                 {invitationsLoading &&
                   Array.from({ length: 3 }, (_, i) => (
                     <TableRow key={`skeleton-${i.toString()}`}>
-                      <TableCell colSpan={5}>
+                      <TableCell colSpan={6}>
                         <Skeleton className="h-6 w-full" />
                       </TableCell>
                     </TableRow>
@@ -283,13 +319,13 @@ export default function InviteClient({
                   <TableRow>
                     <TableCell
                       className="text-center text-muted-foreground"
-                      colSpan={5}
+                      colSpan={6}
                     >
                       発行済みの招待がありません
                     </TableCell>
                   </TableRow>
                 )}
-                {invitations?.map((inv) => (
+                {invitationsPaged.rows.map((inv) => (
                   <TableRow key={inv.id}>
                     <TableCell>
                       <div className="flex flex-col">
@@ -329,6 +365,12 @@ export default function InviteClient({
               </TableBody>
             </Table>
           </div>
+          <LoadMore
+            hasMore={invitationsPaged.hasMore}
+            onMore={invitationsPaged.loadMore}
+            shown={invitationsPaged.shown}
+            total={invitationsPaged.total}
+          />
         </div>
       </div>
 
@@ -336,21 +378,22 @@ export default function InviteClient({
       <div className="flex flex-col gap-4 rounded-md border p-4">
         <h2 className="font-semibold text-lg">登録済みアカウント</h2>
         <div className="overflow-x-auto rounded-md border">
-          <Table>
+          <Table className="text-xs [&_td]:px-1 [&_th]:px-1">
             <TableHeader>
               <TableRow>
                 <TableHead>氏名/メール</TableHead>
                 <TableHead>権限</TableHead>
                 <TableHead>ステータス</TableHead>
                 <TableHead>登録日</TableHead>
-                <TableHead>操作</TableHead>
+                <TableHead>メール署名</TableHead>
+                <TableHead>2段階認証</TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
               {accountsLoading &&
                 Array.from({ length: 5 }, (_, i) => (
                   <TableRow key={`skeleton-${i.toString()}`}>
-                    <TableCell colSpan={5}>
+                    <TableCell colSpan={6}>
                       <Skeleton className="h-6 w-full" />
                     </TableCell>
                   </TableRow>
@@ -359,19 +402,25 @@ export default function InviteClient({
                 <TableRow>
                   <TableCell
                     className="text-center text-muted-foreground"
-                    colSpan={5}
+                    colSpan={7}
                   >
                     登録済みのアカウントがありません
                   </TableCell>
                 </TableRow>
               )}
-              {accounts?.map((u) => (
+              {accountsPaged.rows.map((u) => (
                 <AccountRow
                   account={u}
-                  deletePending={deleteUserMutation.isPending}
                   isCurrentUser={u.id === currentUserId}
                   key={u.id}
-                  onDelete={() => deleteUserMutation.mutate({ id: u.id })}
+                  mfaCell={
+                    <MfaCell
+                      enabled={mfaEnabled.data?.includes(u.id)}
+                      isCurrentUser={u.id === currentUserId}
+                      isError={mfaEnabled.isError}
+                      onReset={() => setMfaResetTarget(u)}
+                    />
+                  }
                   onRoleChange={(role) =>
                     updateRoleStatusMutation.mutate({ id: u.id, role })
                   }
@@ -384,14 +433,76 @@ export default function InviteClient({
             </TableBody>
           </Table>
         </div>
+        <LoadMore
+          hasMore={accountsPaged.hasMore}
+          onMore={accountsPaged.loadMore}
+          shown={accountsPaged.shown}
+          total={accountsPaged.total}
+        />
       </div>
+      <AlertDialog
+        onOpenChange={(o) => !o && setMfaResetTarget(null)}
+        open={mfaResetTarget !== null}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>2段階認証をリセットしますか？</AlertDialogTitle>
+            <AlertDialogDescription>
+              {mfaResetTarget?.email}
+              の登録スマホ（全台）とリカバリーコードを無効にし、2段階認証をオフにします。スマホをすべて紛失した、または2段階認証をやめる場合に、本人確認ができたときだけ実行してください。本人は次回ログイン後に設定し直せます。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>キャンセル</AlertDialogCancel>
+            <AlertDialogAction
+              disabled={resetMfaMutation.isPending}
+              onClick={() =>
+                mfaResetTarget &&
+                resetMfaMutation.mutate({ userId: mfaResetTarget.id })
+              }
+            >
+              リセットする
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+    </div>
+  );
+}
+
+/** 2段階認証の状態と、管理者によるリセット（スマホ紛失時など）。 */
+function MfaCell({
+  enabled,
+  isCurrentUser,
+  isError,
+  onReset,
+}: {
+  enabled: boolean | undefined;
+  isCurrentUser: boolean;
+  isError: boolean;
+  onReset: () => void;
+}) {
+  if (isError) {
+    return <span className="text-destructive">取得失敗</span>;
+  }
+  if (!enabled) {
+    return <span className="text-muted-foreground">未設定</span>;
+  }
+  return (
+    <div className="flex items-center gap-1">
+      <Badge>有効</Badge>
+      {!isCurrentUser && (
+        <Button onClick={onReset} size="xs" variant="ghost">
+          リセット
+        </Button>
+      )}
     </div>
   );
 }
 
 /**
  * 「登録済みアカウント」テーブルの1行。
- * 自分自身の行（isCurrentUser）は権限セレクト・一時停止・削除のいずれも
+ * 自分自身の行（isCurrentUser）は権限セレクト・停止/再開のいずれも
  * 操作できないようにdisabledにし、「（あなた）」バッジとツールチップで理由を示す
  * （旧app: public/invite.html の renderUserRow の isSelf 判定と同じ意図）。
  * 招待で選べる3ロール（admin/accounting/staff）以外の値（レガシーな'user'等）は、
@@ -406,17 +517,8 @@ function resolveRoleSelectValue(role: string | null): {
   return { isKnown, value: isKnown ? (role as string) : (role ?? "unknown") };
 }
 
-function getActionDisabledReason(
-  isCurrentUser: boolean,
-  isDeleted: boolean
-): string | undefined {
-  if (isCurrentUser) {
-    return "自分自身は変更できません";
-  }
-  if (isDeleted) {
-    return "削除済みのアカウントは変更できません";
-  }
-  return;
+function getActionDisabledReason(isCurrentUser: boolean): string | undefined {
+  return isCurrentUser ? "自分自身は変更できません" : undefined;
 }
 
 function AccountRoleSelect({
@@ -434,7 +536,7 @@ function AccountRoleSelect({
   return (
     <span title={disabledReason}>
       <Select disabled={disabled} onValueChange={onChange} value={value}>
-        <SelectTrigger className="w-32" size="sm">
+        <SelectTrigger className="w-40" size="sm">
           <SelectValue />
         </SelectTrigger>
         <SelectContent>
@@ -455,34 +557,29 @@ function AccountRoleSelect({
 }
 
 function AccountStatusCell({
-  isDeleted,
   isSuspended,
   disabled,
   disabledReason,
   onToggle,
 }: {
-  isDeleted: boolean;
   isSuspended: boolean;
   disabled: boolean;
   disabledReason: string | undefined;
   onToggle: (status: "active" | "suspended") => void;
 }) {
-  if (isDeleted) {
-    return <Badge variant="secondary">削除済み</Badge>;
-  }
   return (
     <div className="flex items-center gap-2">
       <Badge variant={isSuspended ? "secondary" : "default"}>
-        {isSuspended ? "一時停止中" : "有効"}
+        {isSuspended ? "停止中" : "有効"}
       </Badge>
       <span title={disabledReason}>
         <Button
           disabled={disabled}
           onClick={() => onToggle(isSuspended ? "active" : "suspended")}
-          size="sm"
+          size="xs"
           variant="outline"
         >
-          {isSuspended ? "有効化" : "一時停止"}
+          {isSuspended ? "再開" : "停止"}
         </Button>
       </span>
     </div>
@@ -492,29 +589,25 @@ function AccountStatusCell({
 function AccountRow({
   account,
   isCurrentUser,
+  mfaCell,
   onRoleChange,
   onToggleStatus,
-  onDelete,
   roleStatusPending,
-  deletePending,
 }: {
   account: Account;
   isCurrentUser: boolean;
+  mfaCell: React.ReactNode;
   onRoleChange: (role: string) => void;
   onToggleStatus: (status: "active" | "suspended") => void;
-  onDelete: () => void;
   roleStatusPending: boolean;
-  deletePending: boolean;
 }) {
-  const isDeleted = account.status === "deleted";
-  const isSuspended = account.status === "suspended";
-  const actionDisabledReason = getActionDisabledReason(
-    isCurrentUser,
-    isDeleted
-  );
+  // 以前の「削除」で削除済みになったアカウントは、停止中として扱い、再開できる
+  const isSuspended =
+    account.status === "suspended" || account.status === "deleted";
+  const actionDisabledReason = getActionDisabledReason(isCurrentUser);
 
   return (
-    <TableRow className={isDeleted ? "opacity-50" : undefined}>
+    <TableRow>
       <TableCell>
         <div className="flex flex-col">
           <span className="font-medium">
@@ -531,7 +624,7 @@ function AccountRow({
       <TableCell>
         <AccountRoleSelect
           account={account}
-          disabled={isDeleted || isCurrentUser || roleStatusPending}
+          disabled={isCurrentUser || roleStatusPending}
           disabledReason={
             isCurrentUser ? "自分自身の権限は変更できません" : undefined
           }
@@ -542,24 +635,90 @@ function AccountRow({
         <AccountStatusCell
           disabled={isCurrentUser || roleStatusPending}
           disabledReason={actionDisabledReason}
-          isDeleted={isDeleted}
           isSuspended={isSuspended}
           onToggle={onToggleStatus}
         />
       </TableCell>
       <TableCell className="text-xs">{formatDate(account.createdAt)}</TableCell>
       <TableCell>
-        <span title={actionDisabledReason}>
-          <Button
-            disabled={isCurrentUser || isDeleted || deletePending}
-            onClick={onDelete}
-            size="icon"
-            variant="ghost"
-          >
-            <Trash2 className="text-destructive" />
-          </Button>
-        </span>
+        <SignatureCell account={account} disabled={false} />
       </TableCell>
+      <TableCell>{mfaCell}</TableCell>
     </TableRow>
+  );
+}
+
+/** アカウントごとのメール署名の登録（管理者のみ）。送信時にログインユーザーの署名が本文末尾へ自動で付く。 */
+function SignatureCell({
+  account,
+  disabled,
+}: {
+  account: Account;
+  disabled: boolean;
+}) {
+  const utils = api.useUtils();
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(account.emailSignature ?? "");
+  const save = api.users.updateEmailSignature.useMutation({
+    onError: (e) =>
+      toast.error(friendlyErrorMessage(e, "署名の保存に失敗しました")),
+    onSuccess: async () => {
+      await Promise.all([
+        utils.users.list.invalidate(),
+        utils.users.me.invalidate(),
+      ]);
+      toast.success("署名を保存しました");
+      setOpen(false);
+    },
+  });
+  const registered = Boolean(account.emailSignature?.trim());
+  return (
+    <>
+      <Button
+        disabled={disabled}
+        onClick={() => {
+          setDraft(account.emailSignature ?? "");
+          setOpen(true);
+        }}
+        size="xs"
+        variant="outline"
+      >
+        {registered ? "編集" : "登録"}
+      </Button>
+      {registered && (
+        <span className="ml-2 text-muted-foreground text-xs">登録済み</span>
+      )}
+      <Dialog onOpenChange={setOpen} open={open}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>
+              メール署名（{account.name || account.email}）
+            </DialogTitle>
+          </DialogHeader>
+          <p className="text-muted-foreground text-sm">
+            このアカウントでメールを送信すると、本文の末尾に自動で付きます。
+          </p>
+          <Textarea
+            className="min-h-40"
+            maxLength={2000}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder={
+              "株式会社WIN WIN\n氏名\nTEL：075-xxx-xxxx\nメール：xxx@example.com"
+            }
+            value={draft}
+          />
+          <DialogFooter>
+            <Button
+              disabled={save.isPending}
+              onClick={() =>
+                save.mutate({ emailSignature: draft, id: account.id })
+              }
+            >
+              保存
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }

@@ -20,6 +20,12 @@
 - 
 - 
 
+## Human decisions（人の判断）
+<!-- Hard Rule 1/2/5/11/12, reviewer config, or an unresolved client decision was touched? Ask the human BEFORE implementing and record it here verbatim. Write "なし" if none. -->
+| # | Rule | Question asked | Answer (verbatim) | Answered by | Date |
+|---|---|---|---|---|---|
+| 1 |  |  |  |  |  |
+
 ## Testing
 <!-- Describe the testing you've performed -->
 - [ ] Unit tests pass (`bun run test`)

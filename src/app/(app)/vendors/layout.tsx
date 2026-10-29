@@ -1,22 +1,17 @@
-import { redirect } from "next/navigation";
-import { requireSession } from "~/server/auth/require-session";
+import type { Metadata } from "next";
+import { requirePageAccess } from "~/server/auth/require-page-access";
 
-const ALLOWED_ROLES = ["admin", "accounting", "staff", "viewer"];
+export const metadata: Metadata = { title: "発注先マスタ" };
 
 /**
- * 発注先マスタは閲覧を管理者・経理・一般社員・閲覧専用に開放（編集は管理者のみ）。
- * vendors/page.tsx は "use client" のため、ここでガードすることで
- * ページ本体自体をマウントさせない。フォールバック先はアプリのトップ
- * ページ（受注一覧）。
+ * 発注先マスタ。管理者・経理・一般社員・閲覧のみが閲覧可（編集は管理者のみ）。税理士・社労士は不可。
+ * 許可ロールは `~/lib/roles` の PAGE_ROLES が唯一の定義元。
  */
 export default async function VendorsLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
-  const user = await requireSession();
-  if (!ALLOWED_ROLES.includes(user.role)) {
-    redirect("/projects");
-  }
+  await requirePageAccess("/vendors");
   return children;
 }

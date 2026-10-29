@@ -36,7 +36,12 @@ function TableHeader({ className, ...props }: React.ComponentProps<"thead">) {
 function TableBody({ className, ...props }: React.ComponentProps<"tbody">) {
   return (
     <tbody
-      className={cn("[&_tr:last-child]:border-0", className)}
+      className={cn(
+        "[&_tr:last-child]:border-0",
+        // 一覧の本体行のみ、ホバー時に赤に近いオレンジの枠を出す（ヘッダー行は対象外）
+        "[&_tr:hover]:outline-2 [&_tr:hover]:outline-[#ff4500] [&_tr:hover]:outline-solid [&_tr:hover]:-outline-offset-2",
+        className
+      )}
       data-slot="table-body"
       {...props}
     />
@@ -60,7 +65,7 @@ function TableRow({ className, ...props }: React.ComponentProps<"tr">) {
   return (
     <tr
       className={cn(
-        "border-b transition-colors hover:bg-muted/50 has-aria-expanded:bg-muted/50 data-[state=selected]:bg-muted",
+        "border-b transition-colors has-aria-expanded:bg-muted/50 data-[state=selected]:bg-muted",
         className
       )}
       data-slot="table-row"
