@@ -827,13 +827,15 @@ function ProjectsContent() {
         onValueChange={(v) => setFiscalPeriod(Number(v))}
         value={String(fiscalPeriod)}
       >
-        <TabsList className="max-w-full justify-start overflow-x-auto">
-          {fiscalPeriodOptions.map((period) => (
-            <TabsTrigger key={period} value={String(period)}>
-              第{fiscalTermNumber(period)}期
-            </TabsTrigger>
-          ))}
-        </TabsList>
+        <div className="max-w-full overflow-x-auto">
+          <TabsList className="w-max justify-start">
+            {fiscalPeriodOptions.map((period) => (
+              <TabsTrigger key={period} value={String(period)}>
+                第{fiscalTermNumber(period)}期
+              </TabsTrigger>
+            ))}
+          </TabsList>
+        </div>
       </Tabs>
 
       <div className="flex flex-wrap items-end gap-2 md:flex-nowrap">
