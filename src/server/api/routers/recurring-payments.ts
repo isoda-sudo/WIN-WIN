@@ -10,6 +10,7 @@ import {
   MISC_STATUS_PAID,
   MISC_STATUS_UNPAID,
   monthsOfYear,
+  previousMonthOf,
   previousYearPeriod,
   RECURRING_FREQUENCIES,
   RECURRING_STATUS_PLANNED,
@@ -32,6 +33,7 @@ import {
   currentJstYearMonth,
   nextMiscPaymentNoTx,
 } from "~/server/payments/misc-payment";
+import { assertMonthsUnlocked } from "~/server/payments/month-lock";
 import {
   deleteUnpaidRows,
   ensureMonthTx,
@@ -62,7 +64,8 @@ const definitionShape = {
   categoryName: z.string().trim().min(1).nullish(),
   payee: z.string().nullish(),
   branch: z.string().nullish(),
-  amount: z.number().int().nonnegative(),
+  // null = 未定（金額が決まっていない。集計では0円として扱う）
+  amount: z.number().int().nonnegative().nullable(),
   frequency: z.enum(RECURRING_FREQUENCIES),
   dueDay: z.number().int().min(1).max(MAX_DUE_DAY).nullish(),
   dueDayIsMonthEnd: z.boolean().default(false),
@@ -117,8 +120,11 @@ const updateSchema = z
   })
   .superRefine(refineDefinition);
 
-function describeDefinition(d: { amount: number; name: string }): string {
-  return `${d.name}（¥${d.amount.toLocaleString()}）`;
+function describeDefinition(d: {
+  amount: number | null;
+  name: string;
+}): string {
+  return `${d.name}（${d.amount == null ? "未定" : `¥${d.amount.toLocaleString()}`}）`;
 }
 
 interface FeeMethod {
@@ -142,7 +148,8 @@ function feeMethodChanges(before: FeeMethod, after: FeeMethod): string[] {
 }
 
 export interface RecurringMonthRow {
-  amount: number;
+  /** null = 未定（集計では0円）。 */
+  amount: number | null;
   branch: string | null;
   categoryName: string | null;
   companyAccountId: number | null;
@@ -205,8 +212,11 @@ function toMonthRow(
     categoryName: def.categoryName,
     payee: def.payee,
     branch: def.branch,
-    amount: misc?.amount ?? def.amount,
-    dueDate,
+    // 具体化済みの行があれば、その行の金額（月別に直した金額・前月からの引き継ぎ・未定を含む）
+    amount: misc ? misc.amount : def.amount,
+    // 月別に期日を手で直した行は、その期日。それ以外は定義から計算した期日（土日祝は翌営業日）
+    dueDate:
+      misc?.manuallyEdited && misc.paymentDate ? misc.paymentDate : dueDate,
     status: misc
       ? (misc.status ?? MISC_STATUS_UNPAID)
       : RECURRING_STATUS_PLANNED,
@@ -239,7 +249,7 @@ function toOrphanRow(
     categoryName: misc.category,
     payee: misc.payee,
     branch: null,
-    amount: misc.amount ?? 0,
+    amount: misc.amount,
     dueDate: misc.paymentDate ?? `${period}-01`,
     status: misc.status ?? MISC_STATUS_UNPAID,
     materialized: true,
@@ -301,7 +311,7 @@ async function loadMaterialized(
 
 // スキップ行（includeSkipped時のみ存在）は合計に含めない。
 function sumAmount(rows: RecurringMonthRow[]): number {
-  return rows.reduce((acc, r) => acc + (r.skipped ? 0 : r.amount), 0);
+  return rows.reduce((acc, r) => acc + (r.skipped ? 0 : (r.amount ?? 0)), 0);
 }
 
 async function loadSkips(periodPattern: string): Promise<Set<string>> {
@@ -372,7 +382,7 @@ interface MarkInput {
 }
 
 interface MarkResult {
-  amount: number;
+  amount: number | null;
   created: boolean;
   def: Definition;
   id: number;
@@ -474,9 +484,14 @@ async function updateMaterialized(
   input: MarkInput,
   dueDate: string
 ): Promise<MarkResult> {
+  // 未払いに戻すときの期日: 月別に手で直した期日はそのまま。それ以外は定義から計算した期日。
+  const keepEditedDate = existing.manuallyEdited && existing.paymentDate;
+  const unpaidDate = keepEditedDate
+    ? (existing.paymentDate ?? dueDate)
+    : dueDate;
   const paymentDate = paid
     ? input.paidDate || existing.paymentDate || dueDate
-    : dueDate;
+    : unpaidDate;
   const status = paid ? MISC_STATUS_PAID : MISC_STATUS_UNPAID;
   // 支払IDが未付与の古い行だけ採番する（付与済みの番号は凍結）。
   const paymentNo =
@@ -502,7 +517,7 @@ async function updateMaterialized(
     paymentNo,
     paymentDate,
     status,
-    amount: existing.amount ?? def.amount,
+    amount: existing.amount,
   };
 }
 
@@ -532,6 +547,7 @@ async function setMaterializedStatus(
         )
       )
       .for("update");
+    await assertMonthsUnlocked(tx, [dueDate, existing?.paymentDate]);
     if (existing) {
       return await updateMaterialized(tx, def, existing, paid, input, dueDate);
     }
@@ -556,7 +572,7 @@ async function setMaterializedStatus(
       name: `${result.def.categoryName || "-"}（${result.def.payee || "-"}）`,
       changes: [
         paid
-          ? `定期支払い ${label} を支払済みに（¥${result.amount.toLocaleString()}、支払日 ${result.paymentDate}、支払No ${result.paymentNo}）`
+          ? `定期支払い ${label} を支払済みに（${result.amount == null ? "未定" : `¥${result.amount.toLocaleString()}`}、支払日 ${result.paymentDate}、支払No ${result.paymentNo}）`
           : `定期支払い ${label} を支払済みから未払いへ戻した`,
       ],
     }
@@ -572,7 +588,11 @@ async function setMaterializedStatus(
 // 未払いの具体化行（支払IDだけ付いた行）を消す。支払済みなら拒否する。
 async function removeUnpaidPlaceholder(tx: Tx, input: MarkInput) {
   const [existing] = await tx
-    .select({ id: miscPayments.id, status: miscPayments.status })
+    .select({
+      id: miscPayments.id,
+      paymentDate: miscPayments.paymentDate,
+      status: miscPayments.status,
+    })
     .from(miscPayments)
     .where(
       and(
@@ -583,6 +603,7 @@ async function removeUnpaidPlaceholder(tx: Tx, input: MarkInput) {
   if (!existing) {
     return;
   }
+  await assertMonthsUnlocked(tx, [existing.paymentDate]);
   if (existing.status === MISC_STATUS_PAID) {
     throw new TRPCError({
       code: "BAD_REQUEST",
@@ -778,7 +799,20 @@ export const recurringPaymentsRouter = createTRPCRouter({
         previousYearPeriod(input.month) ?? input.month,
         input.includeSkipped ?? false
       );
-      const rows = buildMonthRows(defs, ctx, input.month);
+      const inMonth = (r: RecurringMonthRow) =>
+        r.dueDate.startsWith(`${input.month}-`);
+      // 支払月（period）の行のうち、期日がこの月にあるもの
+      const rows = buildMonthRows(defs, ctx, input.month).filter(inMonth);
+      // 前月の月末などが休日で、期日が翌営業日（この月）へ繰り越された前月分の行も、この月に出す
+      const prev = previousMonthOf(input.month);
+      if (prev) {
+        const { ctx: prevCtx } = await loadMonthContext(
+          prev,
+          previousYearPeriod(prev) ?? prev,
+          input.includeSkipped ?? false
+        );
+        rows.push(...buildMonthRows(defs, prevCtx, prev).filter(inMonth));
+      }
       return { month: input.month, rows, total: sumAmount(rows) };
     }),
 
@@ -813,6 +847,86 @@ export const recurringPaymentsRouter = createTRPCRouter({
         year: input.year,
         months,
         total: months.reduce((acc, m) => acc + m.total, 0),
+      };
+    }),
+
+  // 一覧上で、その月だけの金額・期日を直す（定義は変えない）。どの月でも直せる（未払いの行のみ）。
+  // 行がまだ無い月は、先に作ってから直す。直した行は定義の編集で上書きされない。
+  // amount を null にすると「未定」（集計では0円）。
+  updateMonth: accountingOrAdminProcedure
+    .input(
+      markInput.extend({
+        amount: z
+          .number()
+          .int()
+          .nonnegative()
+          .max(1_000_000_000_000)
+          .nullable()
+          .optional(),
+        paymentDate: isoDateSchema.optional(),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const result = await db.transaction(async (tx) => {
+        await lockRowKey(tx, input);
+        const { def, dueDate } = await loadTarget(tx, input);
+        await materializeUnpaidRow(tx, def, input.period);
+        const [existing] = await tx
+          .select()
+          .from(miscPayments)
+          .where(
+            and(
+              eq(miscPayments.recurringId, input.recurringId),
+              eq(miscPayments.period, input.period)
+            )
+          )
+          .for("update");
+        if (!existing) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        }
+        if (existing.status === MISC_STATUS_PAID) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "支払済みの行は直せません。先に未払いに戻してください",
+          });
+        }
+        const nextAmount =
+          input.amount === undefined ? existing.amount : input.amount;
+        // 期日を指定しないときの期日: 手で直した行はその期日、そうでなければ定義から計算した期日
+        // （休日の繰越の前に作られた行が、古い月末の日付のまま残らないようにする）
+        const keptDate = existing.manuallyEdited ? existing.paymentDate : null;
+        const nextDate = input.paymentDate ?? keptDate ?? dueDate;
+        await assertMonthsUnlocked(tx, [existing.paymentDate, nextDate]);
+        const transferFee = await computeTransferFee(tx, {
+          companyAccountId: existing.companyAccountId ?? def.companyAccountId,
+          payee: existing.payee,
+          amount: nextAmount,
+        });
+        await tx
+          .update(miscPayments)
+          .set({
+            amount: nextAmount,
+            paymentDate: nextDate,
+            transferFee,
+            manuallyEdited: true,
+          })
+          .where(eq(miscPayments.id, existing.id));
+        return { def, existing, nextAmount, nextDate, transferFee };
+      });
+      const { def, existing, nextAmount, nextDate } = result;
+      const money = (n: number | null) =>
+        n == null ? "未定" : `¥${n.toLocaleString()}`;
+      await logAudit(ctx.user.id, "UPDATE", "misc_payments", existing.id, {
+        name: `${def.categoryName || "-"}（${def.payee || "-"}）`,
+        changes: [
+          `定期支払い ${def.name} ${input.period}（この月だけ）: 金額 ${money(existing.amount)} → ${money(nextAmount)}、期日 ${existing.paymentDate || "-"} → ${nextDate}`,
+        ],
+      });
+      return {
+        amount: nextAmount,
+        miscPaymentId: existing.id,
+        paymentDate: nextDate,
+        transferFee: result.transferFee,
       };
     }),
 

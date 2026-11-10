@@ -49,6 +49,7 @@ import {
   type PaymentDueMonthOffset,
   withCurrentValue,
 } from "~/lib/payment-term";
+import { canSeeUnmaskedBank, canWriteMaster } from "~/lib/roles";
 import { useSortedPagedList } from "~/lib/use-sorted-paged-list";
 import { api, type RouterOutputs } from "~/trpc/react";
 
@@ -176,7 +177,8 @@ export default function VendorsPage() {
   } = api.vendors.list.useQuery();
   const { data: categories } = api.categories.list.useQuery();
   const { data: me } = api.users.me.useQuery();
-  const canEdit = me?.role === "admin";
+  const canEdit = canWriteMaster(me?.role);
+  // 新規・編集・削除は、管理者・経理・一般社員ができる
   const [keyword, setKeyword] = useState("");
   const [editing, setEditing] = useState<VendorDetail | null>(null);
   const [loadingDetailId, setLoadingDetailId] = useState<string | null>(null);
@@ -199,6 +201,7 @@ export default function VendorsPage() {
   }, [vendors, keyword]);
 
   const paged = useSortedPagedList({
+    initialShowAll: true,
     options: SORT_OPTIONS,
     resetKey: keyword,
     rows: filtered,
@@ -303,7 +306,7 @@ export default function VendorsPage() {
             工事を発注する協力会社・仕入先を管理します
           </p>
         </div>
-        <div className="flex flex-nowrap items-end gap-2">
+        <div className="flex flex-wrap items-end gap-2 md:flex-nowrap">
           <Input
             className="h-8 min-w-32 flex-1"
             onChange={(e) => setKeyword(e.target.value)}
@@ -431,7 +434,12 @@ export default function VendorsPage() {
           <DialogHeader>
             <DialogTitle>新規発注先登録</DialogTitle>
           </DialogHeader>
-          <VendorForm categories={categories} form={form} setForm={setForm} />
+          <VendorForm
+            categories={categories}
+            form={form}
+            setForm={setForm}
+            showBank={canSeeUnmaskedBank(me?.role)}
+          />
           <DialogFooter>
             <Button disabled={createMutation.isPending} onClick={submitCreate}>
               登録
@@ -448,7 +456,12 @@ export default function VendorsPage() {
           <DialogHeader>
             <DialogTitle>発注先情報を編集</DialogTitle>
           </DialogHeader>
-          <VendorForm categories={categories} form={form} setForm={setForm} />
+          <VendorForm
+            categories={categories}
+            form={form}
+            setForm={setForm}
+            showBank={canSeeUnmaskedBank(me?.role)}
+          />
           <DialogFooter className="justify-between sm:justify-between">
             <Button
               disabled={deleteMutation.isPending}
@@ -473,10 +486,13 @@ function VendorForm({
   categories,
   form,
   setForm,
+  showBank,
 }: {
   categories: RouterOutputs["categories"]["list"] | undefined;
   form: FormState;
   setForm: (f: FormState) => void;
+  /** 振込先口座情報を表示・編集できるか（管理者・経理のみ。一般社員には出さない）。 */
+  showBank: boolean;
 }) {
   const set = <K extends keyof FormState>(key: K, value: FormState[K]) =>
     setForm({ ...form, [key]: value });
@@ -505,8 +521,8 @@ function VendorForm({
 
   return (
     <div className="flex flex-col gap-6">
-      <div className="grid grid-cols-2 gap-4">
-        <div className="col-span-2 flex flex-col gap-2">
+      <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+        <div className="flex flex-col gap-2 sm:col-span-2">
           <Label>会社名 *</Label>
           <Input
             onChange={(e) => set("company", e.target.value)}
@@ -561,7 +577,7 @@ function VendorForm({
             </Button>
           </div>
         </div>
-        <div className="col-span-2 flex flex-col gap-2">
+        <div className="flex flex-col gap-2 sm:col-span-2">
           <Label>住所</Label>
           <Input
             onChange={(e) => set("address", e.target.value)}
@@ -583,7 +599,7 @@ function VendorForm({
             value={form.companyScale}
           />
         </div>
-        <div className="col-span-2 flex flex-col gap-2">
+        <div className="flex flex-col gap-2 sm:col-span-2">
           <Label>コーポレートサイト</Label>
           <Input
             onChange={(e) => set("website", e.target.value)}
@@ -591,7 +607,7 @@ function VendorForm({
             value={form.website}
           />
         </div>
-        <div className="col-span-2 flex flex-col gap-2">
+        <div className="flex flex-col gap-2 sm:col-span-2">
           <Label>対応工種（タグ）</Label>
           <div className="flex flex-wrap gap-3 rounded-md border p-3">
             {categories?.map((c) => {
@@ -620,55 +636,57 @@ function VendorForm({
         </div>
       </div>
 
-      <div className="flex flex-col gap-4 rounded-md border p-4">
-        <h3 className="font-medium text-sm">振込先口座情報</h3>
-        <div className="grid grid-cols-2 gap-4">
-          <div className="flex flex-col gap-2">
-            <Label>銀行名</Label>
-            <BankSelect
-              onChange={(v) => set("bankName", v)}
-              value={form.bankName}
-            />
-          </div>
-          <div className="flex flex-col gap-2">
-            <Label>支店名</Label>
-            <BranchSelect
-              bankName={form.bankName}
-              onChange={(v) => set("bankBranch", v)}
-              value={form.bankBranch}
-            />
-          </div>
-          <div className="flex flex-col gap-2">
-            <Label>預金種別</Label>
-            <Select
-              onValueChange={(v) => set("bankType", v)}
-              value={form.bankType}
-            >
-              <SelectTrigger className="w-full">
-                <SelectValue placeholder="選択してください" />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="普通">普通</SelectItem>
-                <SelectItem value="当座">当座</SelectItem>
-              </SelectContent>
-            </Select>
-          </div>
-          <div className="flex flex-col gap-2">
-            <Label>口座番号</Label>
-            <Input
-              onChange={(e) => set("bankNumber", e.target.value)}
-              value={form.bankNumber}
-            />
-          </div>
-          <div className="col-span-2 flex flex-col gap-2">
-            <Label>口座名義</Label>
-            <Input
-              onChange={(e) => set("bankHolder", e.target.value)}
-              value={form.bankHolder}
-            />
+      {showBank && (
+        <div className="flex flex-col gap-4 rounded-md border p-4">
+          <h3 className="font-medium text-sm">振込先口座情報</h3>
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div className="flex flex-col gap-2">
+              <Label>銀行名</Label>
+              <BankSelect
+                onChange={(v) => set("bankName", v)}
+                value={form.bankName}
+              />
+            </div>
+            <div className="flex flex-col gap-2">
+              <Label>支店名</Label>
+              <BranchSelect
+                bankName={form.bankName}
+                onChange={(v) => set("bankBranch", v)}
+                value={form.bankBranch}
+              />
+            </div>
+            <div className="flex flex-col gap-2">
+              <Label>預金種別</Label>
+              <Select
+                onValueChange={(v) => set("bankType", v)}
+                value={form.bankType}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue placeholder="選択してください" />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="普通">普通</SelectItem>
+                  <SelectItem value="当座">当座</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+            <div className="flex flex-col gap-2">
+              <Label>口座番号</Label>
+              <Input
+                onChange={(e) => set("bankNumber", e.target.value)}
+                value={form.bankNumber}
+              />
+            </div>
+            <div className="flex flex-col gap-2 sm:col-span-2">
+              <Label>口座名義</Label>
+              <Input
+                onChange={(e) => set("bankHolder", e.target.value)}
+                value={form.bankHolder}
+              />
+            </div>
           </div>
         </div>
-      </div>
+      )}
 
       <div className="flex flex-col gap-2 rounded-md border p-4">
         <Label>支払条件</Label>

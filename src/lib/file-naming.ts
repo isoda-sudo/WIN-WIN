@@ -8,7 +8,7 @@ import {
   sanitizeFilenamePart,
 } from "~/lib/invoice-filename";
 
-export type OrderFileKind = "ack" | "invoice";
+type OrderFileKind = "ack" | "invoice";
 
 const MAX_VENDOR_LENGTH = 60;
 const FALLBACK_VENDOR = "取引先なし";
@@ -52,7 +52,7 @@ export function normalizeDocAmount(amount: number | null | undefined): number {
   return Number.isFinite(n) && n > 0 ? n : 0;
 }
 
-export interface OrderFileNameInput {
+interface OrderFileNameInput {
   amount: number;
   docDate: string;
   kind: OrderFileKind;

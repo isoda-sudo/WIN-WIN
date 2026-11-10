@@ -6,7 +6,7 @@ import { invoiceFiles, invoices, projects } from "~/server/db/schema";
 type Tx = Parameters<Parameters<typeof db.transaction>[0]>[0];
 type DbOrTx = typeof db | Tx;
 
-export interface ProjectBillingTotals {
+interface ProjectBillingTotals {
   /** 契約金額（税抜）。工事計画の売上（projects.amount）。画面の「契約金額」と同じ値（D-14）。 */
   contractSubtotal: number;
   /** 保存コピーが残っている分割請求の税抜小計の合計。 */

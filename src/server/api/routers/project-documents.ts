@@ -1,6 +1,7 @@
 import { TRPCError } from "@trpc/server";
 import { and, asc, eq, isNull } from "drizzle-orm";
 import { z } from "zod";
+import { pdfDataUrlSchema } from "~/lib/pdf-data-url";
 import { PROJECT_DOCUMENT_KINDS } from "~/lib/project-documents";
 import {
   createTRPCRouter,
@@ -46,10 +47,7 @@ export const projectDocumentsRouter = createTRPCRouter({
   upload: notViewerProcedure
     .input(
       z.object({
-        dataUrl: z
-          .string()
-          .startsWith("data:application/pdf")
-          .max(MAX_DATA_URL_CHARS),
+        dataUrl: pdfDataUrlSchema(MAX_DATA_URL_CHARS),
         filename: z.string().trim().min(1).max(200),
         kind: z.enum(PROJECT_DOCUMENT_KINDS),
         projectId: z.number().int(),

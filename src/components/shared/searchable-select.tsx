@@ -10,7 +10,7 @@ import {
 } from "~/components/ui/popover";
 import { cn } from "~/lib/utils";
 
-export interface SearchableOption {
+interface SearchableOption {
   label: string;
   value: string;
 }

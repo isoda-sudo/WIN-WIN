@@ -1,6 +1,7 @@
 import { drizzle } from "drizzle-orm/postgres-js";
 import postgres from "postgres";
 import { env } from "~/env";
+import { dbSslOption } from "~/lib/db-ssl";
 import {
   auditLogs,
   banks,
@@ -106,6 +107,8 @@ const RESET_MIN_INTERVAL_MS = 5000;
 
 function createConn(): postgres.Sql {
   return postgres(env.DATABASE_URL, {
+    // 本番では、DBとの通信を暗号化する（接続文字列に sslmode の指定があれば、それに従う）
+    ssl: dbSslOption(env.DATABASE_URL, env.NODE_ENV),
     prepare: false,
     max: MAX_CONNECTIONS,
     idle_timeout: IDLE_TIMEOUT_SECONDS,

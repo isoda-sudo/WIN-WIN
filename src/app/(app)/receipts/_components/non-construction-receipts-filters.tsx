@@ -39,8 +39,8 @@ export function NonConstructionReceiptFilterBar({
   ) => onChange({ ...filters, [key]: value });
 
   return (
-    <div className="flex flex-nowrap items-end justify-between gap-2">
-      <div className="flex min-w-0 flex-1 flex-nowrap items-end gap-2">
+    <div className="flex flex-wrap items-end justify-between gap-2 md:flex-nowrap">
+      <div className="flex w-full min-w-0 flex-1 flex-wrap items-end gap-2 md:w-auto md:flex-nowrap">
         <div className="flex min-w-0 shrink flex-col gap-1">
           <Label className="text-muted-foreground text-xs">
             入金ステータス
@@ -61,7 +61,7 @@ export function NonConstructionReceiptFilterBar({
             </SelectContent>
           </Select>
         </div>
-        <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <div className="flex min-w-40 flex-1 flex-col gap-1 md:min-w-0">
           <Label className="text-muted-foreground text-xs">検索</Label>
           <Input
             className="h-8 w-full min-w-0 px-2 text-xs"
@@ -71,7 +71,7 @@ export function NonConstructionReceiptFilterBar({
           />
         </div>
       </div>
-      <div className="flex shrink-0 flex-nowrap items-end gap-2">
+      <div className="flex w-full shrink-0 flex-wrap items-end gap-2 md:w-auto md:flex-nowrap">
         {!readOnly && (
           <>
             <Button

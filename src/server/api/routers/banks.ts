@@ -3,7 +3,7 @@ import { asc, eq, isNotNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import { BANK_GROUP_NAMES } from "~/lib/banks";
 import {
-  adminProcedure,
+  accountingOrAdminProcedure,
   createTRPCRouter,
   masterReadableProcedure,
 } from "~/server/api/trpc";
@@ -48,7 +48,7 @@ export const banksRouter = createTRPCRouter({
     })
   ),
 
-  create: adminProcedure
+  create: accountingOrAdminProcedure
     .input(z.object({ code: codeSchema, group: groupSchema, name: nameSchema }))
     .mutation(async ({ ctx, input }) => {
       const dup = await db.query.banks.findFirst({
@@ -79,7 +79,7 @@ export const banksRouter = createTRPCRouter({
       return { id: row.id };
     }),
 
-  update: adminProcedure
+  update: accountingOrAdminProcedure
     .input(
       z.object({
         code: codeSchema,
@@ -138,7 +138,7 @@ export const banksRouter = createTRPCRouter({
 
   // 発注先・自社口座は銀行名を文字列で保持しているため、削除しても既存の登録は変わらない
   // （プルダウン上は「登録済み（リスト外）」として残る）。
-  delete: adminProcedure
+  delete: accountingOrAdminProcedure
     .input(z.object({ id: z.number().int() }))
     .mutation(async ({ ctx, input }) => {
       const before = await db.query.banks.findFirst({
@@ -186,7 +186,7 @@ export const banksRouter = createTRPCRouter({
     }),
 
   // 支店の手動管理（管理者）。自動連携の件数と、手動で追加した支店を返す。
-  branchAdmin: adminProcedure
+  branchAdmin: accountingOrAdminProcedure
     .input(z.object({ bankCode: z.string().regex(/^\d{4}$/) }))
     .query(async ({ input }) => {
       const [auto, overrides] = await Promise.all([
@@ -206,7 +206,7 @@ export const banksRouter = createTRPCRouter({
     }),
 
   // 支店データの最新化の状況（最終実行日時）。
-  branchRefreshStatus: adminProcedure.query(async () => {
+  branchRefreshStatus: accountingOrAdminProcedure.query(async () => {
     const [row] = await db
       .select({ at: sql<Date | null>`max(${bankBranchCache.fetchedAt})` })
       .from(bankBranchCache);
@@ -215,7 +215,7 @@ export const banksRouter = createTRPCRouter({
 
   // 自動連携の支店データを最新化する（管理者・任意のタイミング）。マスタに登録済みの銀行コードごとに、
   // 全銀協データの公開元から最新を取得して保存し直す。手動で追加した支店には触れない。
-  refreshBranches: adminProcedure.mutation(async ({ ctx }) => {
+  refreshBranches: accountingOrAdminProcedure.mutation(async ({ ctx }) => {
     const rows = await db
       .selectDistinct({ code: banks.code })
       .from(banks)
@@ -283,7 +283,7 @@ export const banksRouter = createTRPCRouter({
   }),
 
   // 手動で支店を追加する（廃止・新設・一覧に無い支店）。
-  addBranch: adminProcedure
+  addBranch: accountingOrAdminProcedure
     .input(
       z.object({
         bankCode: z.string().regex(/^\d{4}$/),
@@ -325,7 +325,7 @@ export const banksRouter = createTRPCRouter({
     }),
 
   // 手動で追加した支店を削除する。
-  removeOverride: adminProcedure
+  removeOverride: accountingOrAdminProcedure
     .input(z.object({ id: z.number().int() }))
     .mutation(async ({ ctx, input }) => {
       const [row] = await db
@@ -352,7 +352,9 @@ interface AutoBranch {
 }
 
 /** 自動連携の支店。最新化済みならその結果、まだなら同梱の zengin-code のデータ。 */
-async function loadAutoBranches(bankCode: string): Promise<AutoBranch[]> {
+export async function loadAutoBranches(
+  bankCode: string
+): Promise<AutoBranch[]> {
   const [cached] = await db
     .select({ branches: bankBranchCache.branches })
     .from(bankBranchCache)

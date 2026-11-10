@@ -33,6 +33,7 @@ import {
 } from "~/components/ui/table";
 import { BANK_GROUP_NAMES, BANK_GROUP_TONE } from "~/lib/banks";
 import type { SortOption } from "~/lib/list-sort";
+import { canEditSettingsMaster } from "~/lib/roles";
 import { useSortedPagedList } from "~/lib/use-sorted-paged-list";
 import { cn } from "~/lib/utils";
 import { api, type RouterOutputs } from "~/trpc/react";
@@ -143,7 +144,7 @@ export default function BanksPage() {
   const utils = api.useUtils();
   const { data: banks, isLoading } = api.banks.list.useQuery();
   const { data: me } = api.users.me.useQuery();
-  const canEdit = me?.role === "admin";
+  const canEdit = canEditSettingsMaster(me?.role);
   const [keyword, setKeyword] = useState("");
   const [editing, setEditing] = useState<Bank | null>(null);
   const [branchBank, setBranchBank] = useState<Bank | null>(null);
@@ -158,6 +159,7 @@ export default function BanksPage() {
   }, [banks, keyword]);
 
   const paged = useSortedPagedList({
+    initialShowAll: true,
     options: SORT_OPTIONS,
     resetKey: keyword,
     rows: filtered,
@@ -222,7 +224,7 @@ export default function BanksPage() {
             発注先マスタ・自社口座マスタの銀行名プルダウンに出す銀行を管理します
           </p>
         </div>
-        <div className="flex flex-nowrap items-end gap-2">
+        <div className="flex flex-wrap items-end gap-2 md:flex-nowrap">
           <Input
             className="h-8 min-w-32 flex-1"
             onChange={(e) => setKeyword(e.target.value)}

@@ -16,6 +16,10 @@ export const COMPANY = {
   bank: "テスト銀行 京都支店",
   account: "(普)1234567",
   accountHolder: "カ）ウィン",
+  // 総合振込CSVのヘッダーに入る振込依頼人（会社）コード（10桁）と依頼人名（半角カナ）。
+  // 総合振込csv修正内容1103.xlsx の記載例の値で、実際の取引銀行から付与されたコードではない。本番運用の前に差し替えること。
+  transferClientCode: "2618066900",
+  transferClientName: "ｶ)ｳｲﾝ ｳｲﾝ",
   feeNote: "振込手数料は振込人様にてご負担ください。",
 } as const;
 

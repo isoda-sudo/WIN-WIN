@@ -48,7 +48,7 @@ function validateForm(form: MiscFormState): number | null {
   return value;
 }
 
-export interface MiscDialogState {
+interface MiscDialogState {
   creating: boolean;
   deleteTarget: MiscPayment | null;
   editing: MiscPayment | null;

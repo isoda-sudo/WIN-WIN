@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { MAX_ITEM_PRICE, MAX_ITEM_QTY } from "~/lib/invoice-tax";
+import { pdfDataUrlSchema, safeAttachmentFilename } from "~/lib/pdf-data-url";
 
 const MAX_RECIPIENTS = 10;
 const MAX_SUBJECT = 200;
@@ -43,9 +44,18 @@ const MAX_EXTRA_FILES = 5;
 const MAX_EXTRA_DATA_URL_CHARS = 4_200_000;
 
 /** 送信画面でその場で追加した添付ファイル（見積書・報告書など）。 */
+// 追加できるのは PDF だけ（形式・先頭の %PDF- を確認する）。ファイル名は、パス・引用符・改行を除き、.pdf にそろえる。
 const extraFileSchema = z.object({
-  dataUrl: z.string().startsWith("data:").max(MAX_EXTRA_DATA_URL_CHARS),
-  filename: z.string().trim().min(1).max(200),
+  dataUrl: pdfDataUrlSchema(MAX_EXTRA_DATA_URL_CHARS),
+  filename: z
+    .string()
+    .trim()
+    .min(1)
+    .max(200)
+    .transform((name) => {
+      const safe = safeAttachmentFilename(name);
+      return safe.toLowerCase().endsWith(".pdf") ? safe : `${safe}.pdf`;
+    }),
 });
 
 export const invoiceSendSchema = mailFieldsSchema.extend({

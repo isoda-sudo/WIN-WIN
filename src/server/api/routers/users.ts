@@ -1,5 +1,5 @@
 import { TRPCError } from "@trpc/server";
-import { and, asc, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import { ROLE_LABELS, ROLES } from "~/lib/roles";
 import {
@@ -33,20 +33,46 @@ export const usersRouter = createTRPCRouter({
     };
   }),
 
-  // メール送信画面のCC初期値。全ての管理者と経理（有効なアカウント）のアドレス。送信者が画面で外せる。
+  // メール送信画面のCC初期値。「CC初期値」にチェックした有効なアカウントのアドレス。送信者が画面で外せる。
   ccDefaults: notViewerProcedure.query(async () => {
     const rows = await db
       .select({ email: users.email })
       .from(users)
-      .where(
-        and(
-          inArray(users.role, ["admin", "accounting"]),
-          eq(users.status, "active")
-        )
-      )
+      .where(and(eq(users.ccDefault, true), eq(users.status, "active")))
       .orderBy(asc(users.id));
     return rows.map((r) => r.email);
   }),
+
+  // アカウントごとの「CC初期値」チェック（管理者のみ）
+  updateCcDefault: adminProcedure
+    .input(z.object({ id: z.number().int(), ccDefault: z.boolean() }))
+    .mutation(async ({ ctx, input }) => {
+      const before = await db.query.users.findFirst({
+        where: eq(users.id, input.id),
+      });
+      if (!before || before.status === "deleted") {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "ユーザーが見つかりません",
+        });
+      }
+      if (before.ccDefault === input.ccDefault) {
+        return { success: true };
+      }
+      await db
+        .update(users)
+        .set({ ccDefault: input.ccDefault, updatedAt: new Date() })
+        .where(eq(users.id, input.id));
+      await logAudit(ctx.user.id, "UPDATE", "users", input.id, {
+        name: before.name ?? before.email,
+        changes: [
+          input.ccDefault
+            ? "メールのCC初期値に入れる: チェックしました"
+            : "メールのCC初期値に入れる: 外しました",
+        ],
+      });
+      return { success: true };
+    }),
 
   list: adminProcedure.query(() =>
     db
@@ -58,10 +84,43 @@ export const usersRouter = createTRPCRouter({
         status: users.status,
         createdAt: users.createdAt,
         emailSignature: users.emailSignature,
+        ccDefault: users.ccDefault,
       })
       .from(users)
       .orderBy(asc(users.id))
   ),
+
+  // 表示名の変更（管理者のみ。自分自身も可。履歴・メール署名などの表示に使われる名前）
+  updateName: adminProcedure
+    .input(
+      z.object({
+        id: z.number().int(),
+        name: z.string().trim().min(1, "名前を入力してください").max(100),
+      })
+    )
+    .mutation(async ({ ctx, input }) => {
+      const before = await db.query.users.findFirst({
+        where: eq(users.id, input.id),
+      });
+      if (!before || before.status === "deleted") {
+        throw new TRPCError({
+          code: "NOT_FOUND",
+          message: "ユーザーが見つかりません",
+        });
+      }
+      if ((before.name ?? "") === input.name) {
+        return { success: true };
+      }
+      await db
+        .update(users)
+        .set({ name: input.name, updatedAt: new Date() })
+        .where(eq(users.id, input.id));
+      await logAudit(ctx.user.id, "UPDATE", "users", input.id, {
+        name: input.name,
+        changes: [`名前変更: ${before.name || "（未設定）"} → ${input.name}`],
+      });
+      return { success: true };
+    }),
 
   // アカウントごとのメール署名（管理者が登録。送信時にログインユーザーの署名が自動で付く）
   updateEmailSignature: adminProcedure

@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Download, Trash2, Upload } from "lucide-react";
+import { Check, Download, ExternalLink, Trash2, Upload } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { UploadPdfDialog } from "~/components/shared/upload-pdf-dialog";
@@ -8,6 +8,7 @@ import { Button } from "~/components/ui/button";
 import {
   Dialog,
   DialogContent,
+  DialogFooter,
   DialogHeader,
   DialogTitle,
 } from "~/components/ui/dialog";
@@ -108,6 +109,11 @@ function ReportListDialog({
 }) {
   const utils = api.useUtils();
   const [confirmId, setConfirmId] = useState<number | null>(null);
+  // 見積書・契約書と同じく、アプリの中のプレビュー（モーダル）で開く
+  const [previewDoc, setPreviewDoc] = useState<{
+    filename: string;
+    id: number;
+  } | null>(null);
   const { data: docs, isLoading } = api.projectDocuments.list.useQuery({
     projectId,
   });
@@ -139,14 +145,26 @@ function ReportListDialog({
           )}
           {(docs ?? []).map((d) => (
             <li className="flex items-center gap-2 p-2 text-sm" key={d.id}>
-              <a
-                className="min-w-0 flex-1 truncate text-primary hover:underline"
-                href={`/api/project-documents/${d.id}`}
-                rel="noreferrer"
-                target="_blank"
+              <button
+                className="min-w-0 flex-1 truncate text-left text-primary hover:underline"
+                onClick={() =>
+                  setPreviewDoc({ filename: d.filename, id: d.id })
+                }
+                title="クリックでプレビュー"
+                type="button"
               >
                 {d.filename}
-              </a>
+              </button>
+              <Button asChild size="icon-xs" variant="ghost">
+                <a
+                  aria-label="新しいタブで開く"
+                  href={`/api/project-documents/${d.id}`}
+                  rel="noreferrer"
+                  target="_blank"
+                >
+                  <ExternalLink />
+                </a>
+              </Button>
               <Button asChild size="icon-xs" variant="ghost">
                 <a
                   aria-label="ダウンロード"
@@ -182,6 +200,36 @@ function ReportListDialog({
           </Button>
         </div>
       </DialogContent>
+      <Dialog
+        onOpenChange={(o) => !o && setPreviewDoc(null)}
+        open={previewDoc !== null}
+      >
+        <DialogContent className="max-h-[85vh] max-w-3xl">
+          <DialogHeader>
+            <DialogTitle>報告書（{previewDoc?.filename}）</DialogTitle>
+          </DialogHeader>
+          {previewDoc && (
+            <iframe
+              className="h-[65vh] w-full rounded-md border"
+              src={`/api/project-documents/${previewDoc.id}#toolbar=1&view=FitH`}
+              title="報告書PDF"
+            />
+          )}
+          <DialogFooter>
+            {previewDoc && (
+              <Button asChild variant="outline">
+                <a href={`/api/project-documents/${previewDoc.id}?download=1`}>
+                  <Download data-icon="inline-start" />
+                  ダウンロード
+                </a>
+              </Button>
+            )}
+            <Button onClick={() => setPreviewDoc(null)} variant="outline">
+              閉じる
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </Dialog>
   );
 }

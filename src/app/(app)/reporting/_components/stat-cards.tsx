@@ -1,6 +1,6 @@
 import { cn } from "~/lib/utils";
 
-export interface StatItem {
+interface StatItem {
   /** 補足（単位・算出式など）。 */
   hint?: string;
   label: string;

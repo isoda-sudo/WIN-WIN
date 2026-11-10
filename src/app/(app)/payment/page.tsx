@@ -84,7 +84,6 @@ import { useSortedPagedList } from "~/lib/use-sorted-paged-list";
 import { cn } from "~/lib/utils";
 import { currentYearMonth, isDateInYearMonth } from "~/lib/year-month";
 import { api, type RouterOutputs } from "~/trpc/react";
-import { CsvExportMenu } from "./_components/csv-export-menu";
 import { NonConstructionTab } from "./_components/non-construction-tab";
 import {
   money,
@@ -309,7 +308,7 @@ function MonthlyPaymentSummary({
   return (
     <div className="flex flex-col gap-3">
       <MonthNav onChange={onMonthChange} yearMonth={yearMonth} />
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-3 gap-2 sm:gap-4">
         <SummaryCard
           title="当月支払予定額（手数料込み）"
           value={money(summary.scheduled)}
@@ -330,7 +329,7 @@ function MonthlyPaymentSummary({
  * ここでは各行の発注先名・確定額をそのまま送るだけでよい。振込指定日はサーバー側
  * で当日日付が自動設定される（画面側での指定は不要）。
  */
-async function downloadTransferCsv(orders: Order[], excelSafe: boolean) {
+async function downloadTransferCsv(orders: Order[]) {
   const transferDate = todayIso();
   // 振込対象は未払い（予定）の行のみ。金額は確定額。
   const items = orders
@@ -346,7 +345,7 @@ async function downloadTransferCsv(orders: Order[], excelSafe: boolean) {
   const res = await fetch("/api/export/transfer-csv", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ items, transferDate, excelSafe }),
+    body: JSON.stringify({ items, transferDate }),
   });
   if (!res.ok) {
     const data = (await res.json().catch(() => null)) as {
@@ -359,7 +358,7 @@ async function downloadTransferCsv(orders: Order[], excelSafe: boolean) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
-  a.download = `sougouhurikomi_${transferDate.replaceAll("-", "")}${excelSafe ? "_excel" : ""}.csv`;
+  a.download = `sougouhurikomi_${transferDate.replaceAll("-", "")}.csv`;
   document.body.append(a);
   a.click();
   a.remove();
@@ -725,7 +724,7 @@ function OrderPaymentsTab() {
     updateMutation.mutate({
       id: order.id,
       paymentStatus: status,
-      version: order.version,
+      version: order.version ?? 1,
     });
   };
 
@@ -737,7 +736,7 @@ function OrderPaymentsTab() {
     updateMutation.mutate({
       id: order.id,
       paymentNotes: draft,
-      version: order.version,
+      version: order.version ?? 1,
     });
   };
 
@@ -755,7 +754,7 @@ function OrderPaymentsTab() {
     updateMutation.mutate({
       id: order.id,
       paymentDate: value,
-      version: order.version,
+      version: order.version ?? 1,
     });
   };
 
@@ -769,7 +768,7 @@ function OrderPaymentsTab() {
   ) => {
     updateMutation.mutate({
       id: order.id,
-      version: order.version,
+      version: order.version ?? 1,
       ...nextPaymentTermFields(
         closingDay,
         dueDay,
@@ -787,8 +786,8 @@ function OrderPaymentsTab() {
         yearMonth={summaryMonth}
       />
 
-      <div className="flex flex-nowrap items-end justify-between gap-2">
-        <div className="flex min-w-0 flex-1 flex-nowrap items-end gap-2">
+      <div className="flex flex-wrap items-end justify-between gap-2 md:flex-nowrap">
+        <div className="flex w-full min-w-0 flex-1 flex-wrap items-end gap-2 md:w-auto md:flex-nowrap">
           <div className="flex min-w-0 shrink flex-col gap-1">
             <Label className="text-muted-foreground text-xs">
               支払いステータス
@@ -809,7 +808,7 @@ function OrderPaymentsTab() {
               </SelectContent>
             </Select>
           </div>
-          <div className="flex min-w-0 flex-1 flex-col gap-1">
+          <div className="flex min-w-40 flex-1 flex-col gap-1 md:min-w-0">
             <Label className="text-muted-foreground text-xs">検索</Label>
             <Input
               className="h-8 w-full min-w-0 px-2 text-xs"
@@ -819,7 +818,7 @@ function OrderPaymentsTab() {
             />
           </div>
         </div>
-        <div className="flex shrink-0 flex-nowrap items-end gap-2">
+        <div className="flex w-full shrink-0 flex-wrap items-end gap-2 md:w-auto md:flex-nowrap">
           <Button
             onClick={() => {
               window.location.href = "/api/export/payments";
@@ -830,17 +829,20 @@ function OrderPaymentsTab() {
             一覧をCSV出力
           </Button>
           {canSeeBank && (
-            <CsvExportMenu
-              onExport={(excelSafe) =>
+            <Button
+              onClick={() =>
                 // オーダー移行（コピー元）案件の発注は、コピー先と二重払いにならないよう振込対象から除く
                 downloadTransferCsv(
                   filtered.filter(
                     (o) => !isSuperseded(projectMap.get(o.projectId)?.status)
-                  ),
-                  excelSafe
+                  )
                 )
               }
-            />
+              size="sm"
+              variant="outline"
+            >
+              振込用CSV出力
+            </Button>
           )}
           <OrderColumnsPopover columns={columns} />
         </div>
@@ -885,7 +887,7 @@ function OrderPaymentsTab() {
                   updateMutation.mutate({
                     companyAccountId: id,
                     id: o.id,
-                    version: o.version,
+                    version: o.version ?? 1,
                   })
                 }
                 onNotesBlur={() => handleNotesBlur(o)}

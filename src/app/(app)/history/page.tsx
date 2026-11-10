@@ -182,7 +182,7 @@ export default function HistoryPage() {
         </p>
       </div>
 
-      <div className="flex flex-nowrap items-end gap-2">
+      <div className="flex flex-wrap items-end gap-2 md:flex-nowrap">
         <div className="flex shrink-0 items-center gap-2">
           <span className="whitespace-nowrap text-muted-foreground text-xs">
             対象画面

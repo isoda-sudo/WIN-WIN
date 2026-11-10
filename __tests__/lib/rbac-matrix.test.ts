@@ -5,11 +5,13 @@ import {
 } from "~/lib/history-access";
 import {
   type AppRoute,
+  canEditSettingsMaster,
   canReadMaster,
   canSeeClientPersonalInfo,
   canSeeUnmaskedBank,
   canViewHistory,
   canWrite,
+  canWriteMaster,
   isReadOnlyRole,
   isRole,
   PAGE_ROLES,
@@ -72,8 +74,8 @@ const PAGE_MATRIX: Record<AppRoute, Record<(typeof ROLES)[number], boolean>> = {
   "/banks": {
     admin: true,
     accounting: true,
-    staff: true,
-    viewer: true,
+    staff: false,
+    viewer: false,
     tax_advisor: false,
   },
   "/categories": {
@@ -191,6 +193,18 @@ describe("capability matrix", () => {
     expect(canSeeUnmaskedBank("admin")).toBe(true);
     expect(canSeeUnmaskedBank("accounting")).toBe(true);
     expect(canSeeUnmaskedBank("staff")).toBe(false);
+  });
+
+  it("顧客・発注先・工種マスタは一般社員も編集できる。銀行・支払い種別などの設定系は管理者と経理だけ", () => {
+    for (const role of ["admin", "accounting", "staff"]) {
+      expect(canWriteMaster(role)).toBe(true);
+    }
+    expect(canWriteMaster("viewer")).toBe(false);
+    expect(canWriteMaster("tax_advisor")).toBe(false);
+    expect(canEditSettingsMaster("admin")).toBe(true);
+    expect(canEditSettingsMaster("accounting")).toBe(true);
+    expect(canEditSettingsMaster("staff")).toBe(false);
+    expect(canEditSettingsMaster("viewer")).toBe(false);
   });
 
   it("unknown roles can do nothing", () => {

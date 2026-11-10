@@ -15,7 +15,7 @@
 - 案件に紐付かない支払にも支払Noを付けたい（発注明細側にも支払Noを持たせる）。
 - 部分払い（残金）の運用をやめ、「支払済みなら確定額、それ以外は0」を実支払額とする。
 
-共有DB（本番）のスキーマ変更を伴うため、Hard Rule 1 に従い本ADRで記録する。ADR-0006 と同様、決定済みの仕様変更をまとめて扱う。
+共有DB（本番）のスキーマ変更を伴うため、Hard Rule 1 に従い本ADRで記録する。ADR-0022 と同様、決定済みの仕様変更をまとめて扱う。
 
 ## 検討した選択肢
 
@@ -120,7 +120,7 @@
 
 適用後に `bun run scripts/inspect-db-schema.ts` で MISSING が0件であることを確認する。
 
-調査時点（2026-10-08）の共有DBには、ADR-0006 分（`projects` の確定ロック・予定売上、連絡先・支払条件の列、`invoice_files` テーブル）が既にあった。未適用だったのは `invoices.items`、`invoice_files.pdf`、`orders.payment_no`、`misc_payments` の3列と部分ユニークindex、`payment_categories`、`recurring_payments`。
+調査時点（2026-10-08）の共有DBには、ADR-0022 分（`projects` の確定ロック・予定売上、連絡先・支払条件の列、`invoice_files` テーブル）が既にあった。未適用だったのは `invoices.items`、`invoice_files.pdf`、`orders.payment_no`、`misc_payments` の3列と部分ユニークindex、`payment_categories`、`recurring_payments`。
 
 ### 追記: 定期支払いの画面統合（呼称変更）
 
@@ -139,7 +139,7 @@
 
 ## 参照
 
-- ADR-0006: 請求書PDFの保存と、連絡先・支払条件・確定ロック等のスキーマ追加
+- ADR-0022: 請求書PDFの保存と、連絡先・支払条件・確定ロック等のスキーマ追加
 - `src/lib/recurring-payments.ts`（月別展開・支払Noの純粋ロジック）
 - `src/server/api/routers/{payments,paymentCategories,recurringPayments}.ts`
 

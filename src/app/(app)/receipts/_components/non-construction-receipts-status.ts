@@ -1,6 +1,6 @@
 import { normalizeReceiptStatus } from "~/lib/status-styles";
 
-export const RECEIPT_SKIPPED_STATUS = "当月入金なし";
+const RECEIPT_SKIPPED_STATUS = "当月入金なし";
 
 export const RECEIPT_SKIPPED_STATUS_CLASS = "bg-muted text-muted-foreground";
 
@@ -15,16 +15,16 @@ export type RecurringReceiptStep =
   | "skip"
   | "unskip";
 
-export const RECEIPT_SKIP_BLOCKED_REASON =
+const RECEIPT_SKIP_BLOCKED_REASON =
   "入金済み（記録済み）の月は入金なしにできません。先に未入金に戻してください";
 
-export interface RecurringReceiptStatusSource {
+interface RecurringReceiptStatusSource {
   materialized: boolean;
   skipped: boolean;
   status: string | null | undefined;
 }
 
-export interface RecurringReceiptStatusOption {
+interface RecurringReceiptStatusOption {
   disabled: boolean;
   reason?: string;
   value: RecurringReceiptStatusValue;

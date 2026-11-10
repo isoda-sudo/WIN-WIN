@@ -43,7 +43,7 @@ import {
 } from "./non-construction-receipts-status";
 import { money, QueryErrorRow, RECEIPT_STATUS_OPTIONS } from "./receipt-common";
 
-export const NON_CONSTRUCTION_RECEIPT_COLS = 9;
+const NON_CONSTRUCTION_RECEIPT_COLS = 9;
 const NOTES_TRUNCATE_LENGTH = 15;
 const SKELETON_ROWS = 5;
 

@@ -3,6 +3,8 @@ import { and, eq, isNull, notInArray, sql } from "drizzle-orm";
 import { z } from "zod";
 import { buildOrderFileName, compactDocDate } from "~/lib/file-naming";
 import { calcPaymentDueDate } from "~/lib/payment-term";
+import { pdfDataUrlSchema } from "~/lib/pdf-data-url";
+import { canSeeUnmaskedBank } from "~/lib/roles";
 import { SUPERSEDED_STATUS } from "~/lib/superseded";
 import {
   accountingOrAdminProcedure,
@@ -141,7 +143,8 @@ const ORDERED_STATUSES = new Set(["発注完了", "支払済み"]);
 
 const orderUpdateInput = z.object({
   id: z.number(),
-  version: z.number().nullish(),
+  // 楽観ロック。必須（省略すると他の人の更新を黙って上書きしてしまうため）
+  version: z.number().int(),
   projectId: z.number().optional(),
   category: z.string().nullish(),
   vendor: z.string().nullish(),
@@ -167,6 +170,30 @@ const orderUpdateInput = z.object({
 });
 
 type OrderUpdateInput = z.infer<typeof orderUpdateInput>;
+
+/** 支払の実績（支払済み化・支払日・支払元口座・支払備考）は、経理領域。一般社員が API を直接呼んでも書き換えられないようにする。 */
+const ACCOUNTING_ONLY_ORDER_KEYS = [
+  "paymentStatus",
+  "paidOn",
+  "companyAccountId",
+  "paymentNotes",
+] as const;
+
+function assertMayEditPayment(
+  input: OrderUpdateInput,
+  role: string | null | undefined
+): void {
+  const touches = ACCOUNTING_ONLY_ORDER_KEYS.some(
+    (key) => input[key] !== undefined
+  );
+  if (touches && !canSeeUnmaskedBank(role)) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message:
+        "支払の実績（支払状況・支払日・支払元口座・支払備考）は、管理者・経理だけが変更できます",
+    });
+  }
+}
 type OrderRow = typeof orders.$inferSelect;
 
 // 確定（フィックス）で凍結されないフィールド（支払管理で更新する項目）。
@@ -410,6 +437,7 @@ export const ordersRouter = createTRPCRouter({
   update: notViewerProcedure
     .input(orderUpdateInput)
     .mutation(async ({ ctx, input }) => {
+      assertMayEditPayment(input, ctx.user.role);
       const before = await db.query.orders.findFirst({
         where: eq(orders.id, input.id),
       });
@@ -443,13 +471,10 @@ export const ordersRouter = createTRPCRouter({
           ? workId(input.id)
           : before.orderNo;
 
-      const hasVersion = input.version !== undefined && input.version !== null;
-      const whereClause = hasVersion
-        ? and(
-            eq(orders.id, input.id),
-            eq(orders.version, input.version as number)
-          )
-        : eq(orders.id, input.id);
+      const whereClause = and(
+        eq(orders.id, input.id),
+        eq(orders.version, input.version)
+      );
 
       // 「支払済み」へ変わるときは、振込実行時に口座情報が無いまま確定してしまうのを防ぐため、
       // 発注先マスタに口座番号が登録されているかを確認する（残金の自動消込は廃止: ADR-0007）。
@@ -520,6 +545,13 @@ export const ordersRouter = createTRPCRouter({
         throw new TRPCError({ code: "NOT_FOUND" });
       }
       await assertProjectNotLocked(before.projectId);
+      // 支払済みの発注は、支払の記録として残す（削除できない）
+      if (before.paymentStatus === "支払済み") {
+        throw new TRPCError({
+          code: "BAD_REQUEST",
+          message: "支払済みの発注は、記録を残すため削除できません",
+        });
+      }
       await db.delete(orders).where(eq(orders.id, input.id));
       await logAudit(ctx.user.id, "DELETE", "orders", input.id, {
         name: `${before.category || ""}（${before.vendor || ""}）`,
@@ -584,7 +616,7 @@ export const ordersRouter = createTRPCRouter({
           .string()
           .regex(DOC_DATE_INPUT_RE, "日付はYYYY-MM-DD形式です"),
         docAmount: z.number().int().min(0),
-        dataUrl: z.string().startsWith("data:application/pdf"),
+        dataUrl: pdfDataUrlSchema(),
       })
     )
     .mutation(async ({ ctx, input }) => {

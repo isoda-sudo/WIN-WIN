@@ -50,6 +50,8 @@ export async function GET(
     headers: {
       "Content-Type": "application/pdf",
       "Content-Disposition": `${disposition}; filename="po-${order.id}.pdf"`,
+      // 案件の工期などを直したあと、古いPDFを使い回させない
+      "Cache-Control": "no-store",
     },
   });
 }

@@ -134,8 +134,8 @@ export function AccountDialog({ editingId, onClose, open }: Props) {
             口座情報の取得に失敗しました
           </p>
         ) : (
-          <div className="grid grid-cols-2 gap-4">
-            <div className="col-span-2 flex flex-col gap-2">
+          <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+            <div className="flex flex-col gap-2 sm:col-span-2">
               <Label>表示名 *</Label>
               <Input
                 onChange={(e) => set("name", e.target.value)}

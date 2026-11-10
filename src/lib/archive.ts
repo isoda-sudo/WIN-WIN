@@ -1,7 +1,7 @@
 /** 古い案件の書類アーカイブ（月次バッチ）の純粋な計算。ADR-0021 */
 
 /** 引渡月から、この年数が過ぎた案件の書類をアーカイブする。 */
-export const ARCHIVE_AFTER_YEARS = 5;
+const ARCHIVE_AFTER_YEARS = 5;
 
 const JST_OFFSET_MS = 9 * 60 * 60 * 1000;
 const MONTH_RE = /^(\d{4})-(\d{2})$/;

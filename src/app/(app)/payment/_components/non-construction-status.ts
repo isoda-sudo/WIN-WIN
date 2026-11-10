@@ -1,6 +1,6 @@
 import { normalizePaymentStatus } from "~/lib/status-styles";
 
-export const SKIPPED_STATUS = "当月支払い無し";
+const SKIPPED_STATUS = "当月支払い無し";
 
 export const SKIPPED_STATUS_CLASS = "bg-muted text-muted-foreground";
 
@@ -11,16 +11,16 @@ export type RecurringStatusValue =
 
 export type RecurringStep = "markPaid" | "markPlanned" | "skip" | "unskip";
 
-export const RECURRING_SKIP_BLOCKED_REASON =
+const RECURRING_SKIP_BLOCKED_REASON =
   "支払済み（記録済み）の月は支払い無しにできません。先に未払いに戻してください";
 
-export interface RecurringStatusSource {
+interface RecurringStatusSource {
   materialized: boolean;
   skipped: boolean;
   status: string | null | undefined;
 }
 
-export interface RecurringStatusOption {
+interface RecurringStatusOption {
   disabled: boolean;
   reason?: string;
   value: RecurringStatusValue;

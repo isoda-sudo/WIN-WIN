@@ -9,7 +9,7 @@ import {
   createTRPCRouter,
   financialReadProcedure,
 } from "~/server/api/trpc";
-import { logAudit } from "~/server/audit/log";
+import { diffChanges, logAudit } from "~/server/audit/log";
 import { db } from "~/server/db";
 import { miscReceipts } from "~/server/db/schema";
 import { assertActiveCompanyAccount } from "~/server/payments/transfer-fee";
@@ -131,19 +131,22 @@ export const miscReceiptsRouter = createTRPCRouter({
       ) {
         await assertActiveCompanyAccount(db, input.companyAccountId);
       }
+      const merged = {
+        category: input.category ?? before.category,
+        name: input.name === undefined ? before.name : input.name || null,
+        payer: input.payer ?? before.payer,
+        amount: input.amount ?? before.amount,
+        receiptDate: input.receiptDate ?? before.receiptDate,
+        status:
+          input.status == null
+            ? normalizeReceiptStatus(before.status)
+            : input.status,
+        notes: input.notes ?? before.notes,
+      };
       await db
         .update(miscReceipts)
         .set({
-          category: input.category ?? before.category,
-          name: input.name === undefined ? before.name : input.name || null,
-          payer: input.payer ?? before.payer,
-          amount: input.amount ?? before.amount,
-          receiptDate: input.receiptDate ?? before.receiptDate,
-          status:
-            input.status == null
-              ? normalizeReceiptStatus(before.status)
-              : input.status,
-          notes: input.notes ?? before.notes,
+          ...merged,
           companyAccountId:
             input.companyAccountId === undefined
               ? before.companyAccountId
@@ -152,11 +155,12 @@ export const miscReceiptsRouter = createTRPCRouter({
         .where(eq(miscReceipts.id, input.id));
       await logAudit(ctx.user.id, "UPDATE", "misc_receipts", input.id, {
         name: describeRow({ ...before, category: before.category }),
-        changes: [
-          input.status && input.status !== normalizeReceiptStatus(before.status)
-            ? `ステータスを ${normalizeReceiptStatus(before.status)} → ${input.status} に変更`
-            : "更新",
-        ],
+        // 金額・入金予定日・ステータス・入金元などの変更前後を残す
+        changes: diffChanges(
+          "misc_receipts",
+          { ...before, status: normalizeReceiptStatus(before.status) },
+          merged
+        ),
       });
       return { id: input.id };
     }),

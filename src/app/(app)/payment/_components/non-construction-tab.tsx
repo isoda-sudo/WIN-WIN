@@ -5,6 +5,8 @@ import { toast } from "sonner";
 import { LoadMore } from "~/components/shared/load-more";
 import { MonthNav } from "~/components/shared/month-nav";
 import { SummaryCard } from "~/components/shared/summary-card";
+import { Badge } from "~/components/ui/badge";
+import { Button } from "~/components/ui/button";
 import { friendlyErrorMessage } from "~/lib/trpc-error";
 import { useCurrentRole } from "~/lib/use-current-role";
 import { currentYearMonth } from "~/lib/year-month";
@@ -41,7 +43,7 @@ const INITIAL_FILTERS: NonConstructionFilters = {
 
 function SummaryCards({ summary }: { summary: NonConstructionSummary }) {
   return (
-    <div className="grid grid-cols-3 gap-4">
+    <div className="grid grid-cols-3 gap-2 sm:gap-4">
       <SummaryCard
         title="当月支払予定額（手数料込み）"
         value={money(summary.scheduled)}
@@ -111,11 +113,53 @@ function useNonConstructionData(month: string) {
   };
 }
 
+/**
+ * 工事外の月ごとの確定（ロック）。受注一覧の確定と同じく、管理者のみ・その月の末日を過ぎてから。
+ * 確定した月は、一覧上の金額・期日の入力や、ステータス・削除ができない。
+ */
+function MonthLockControl({
+  isAdmin,
+  locked,
+  month,
+}: {
+  isAdmin: boolean;
+  locked: boolean;
+  month: string;
+}) {
+  const utils = api.useUtils();
+  const setLock = api.payments.monthLock.set.useMutation({
+    onSuccess: async (_, vars) => {
+      await utils.payments.monthLock.list.invalidate();
+      toast.success(
+        vars.locked ? "この月を確定しました" : "確定を解除しました"
+      );
+    },
+    onError: (err) =>
+      toast.error(friendlyErrorMessage(err, "確定の更新に失敗しました")),
+  });
+  const monthOver = month < currentYearMonth();
+  return (
+    <div className="flex items-center gap-2">
+      {locked && <Badge variant="secondary">確定済み</Badge>}
+      {isAdmin && (locked || monthOver) && (
+        <Button
+          disabled={setLock.isPending}
+          onClick={() => setLock.mutate({ month, locked: !locked })}
+          size="sm"
+          variant="outline"
+        >
+          {locked ? "確定を解除" : "この月を確定"}
+        </Button>
+      )}
+    </div>
+  );
+}
+
 export function NonConstructionTab() {
   const [month, setMonth] = useState(currentYearMonth);
   const [filters, setFilters] = useState(INITIAL_FILTERS);
   const [managing, setManaging] = useState(false);
-  const { isReadOnly, ready } = useCurrentRole();
+  const { isReadOnly, ready, role } = useCurrentRole();
   useEnsureRecurringMonth(month, ready && !isReadOnly);
   const data = useNonConstructionData(month);
   const dialogs = useMiscDialogState();
@@ -159,9 +203,17 @@ export function NonConstructionTab() {
   });
 
   const [showFee, setShowFee] = useShowFeeColumn();
+  const isAdmin = role === "admin";
+  const { data: lockedList } = api.payments.monthLock.list.useQuery(undefined, {
+    enabled: ready,
+  });
+  const lockedMonths = useMemo(() => new Set(lockedList ?? []), [lockedList]);
   const handlers: RowHandlers = {
     readOnly: isReadOnly,
+    lockedMonths,
     onEdit: dialogs.openEdit,
+    onMiscFieldChange: actions.changeMiscField,
+    onRecurringMonthChange: actions.changeRecurringMonth,
     onMiscNotesChange: actions.changeMiscNotes,
     onMiscStatusChange: actions.changeMisc,
     onRecurringStatusChange: actions.changeRecurring,
@@ -171,7 +223,14 @@ export function NonConstructionTab() {
   return (
     <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-3">
-        <MonthNav onChange={setMonth} yearMonth={month} />
+        <div className="flex flex-wrap items-center gap-3">
+          <MonthNav onChange={setMonth} yearMonth={month} />
+          <MonthLockControl
+            isAdmin={isAdmin}
+            locked={lockedMonths.has(month)}
+            month={month}
+          />
+        </div>
         <SummaryCards summary={summary} />
       </div>
 
@@ -179,6 +238,9 @@ export function NonConstructionTab() {
         filters={filters}
         onChange={setFilters}
         onCreate={dialogs.openCreate}
+        onExportCsv={() => {
+          window.location.href = `/api/export/misc-payments?month=${month}`;
+        }}
         onManageRecurring={() => setManaging(true)}
         onShowFeeChange={setShowFee}
         readOnly={isReadOnly}

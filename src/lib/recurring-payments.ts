@@ -1,13 +1,13 @@
 // 定期支払い（賃料・給与・融資返済など）の月別展開と、案件外支払の支払No採番の
-// 純粋ロジック。DB・日付ライブラリに依存しない（Dateのローカルタイムゾーンも使わない）。
-// 営業日繰上げ（payment-term.ts, D-28）は適用しない: 案件外支払は「支払管理は任意の
-// カレンダー日を受け付ける」仕様で、既存の案件外支払も日付をずらさないため。
+// 純粋ロジック。DBに依存しない。
+// 期日が土日・祝日・年末年始なら、翌営業日へ繰り越す（月末払いなら翌月になることがある）。
+// 繰り越した行も支払月（period）は元の月のまま。画面では期日の月に表示される。
 
 import { fiscalPeriodLabel, fiscalPeriodOfMonth } from "~/lib/fiscal-period";
 import { nextSeqFromExisting } from "~/lib/payment-no";
+import { followingBusinessDay } from "~/lib/payment-term";
 
 export const RECURRING_FREQUENCIES = ["monthly", "yearly"] as const;
-export type RecurringFrequency = (typeof RECURRING_FREQUENCIES)[number];
 
 export const MISC_STATUS_PAID = "支払済み";
 export const MISC_STATUS_UNPAID = "未払い";
@@ -46,7 +46,7 @@ export function formatYearMonth(year: number, month: number): string {
 }
 
 /** 月の日数（うるう年対応）。month は 1-12。 */
-export function daysInMonth(year: number, month: number): number {
+function daysInMonth(year: number, month: number): number {
   return new Date(Date.UTC(year, month, 0)).getUTCDate();
 }
 
@@ -71,12 +71,32 @@ export function isActiveInMonth(
   return schedule.frequency === "monthly";
 }
 
+/** 指定月の1つ前の月（"YYYY-MM"）。不正な形式は null。 */
+export function previousMonthOf(yearMonth: string): string | null {
+  const parsed = parseYearMonth(yearMonth);
+  if (!parsed) {
+    return null;
+  }
+  return parsed.month === 1
+    ? formatYearMonth(parsed.year - 1, MONTHS_PER_YEAR)
+    : formatYearMonth(parsed.year, parsed.month - 1);
+}
+
 /**
  * 指定月の支払予定日（YYYY-MM-DD）。対象月でなければ null。
  * 月末フラグ、または日付指定なしは月末。dueDay が月の日数を超える場合（31日指定の
- * 2月など）は月末に丸める。
+ * 2月など）は月末に丸める。その日が土日・祝日・年末年始なら翌営業日へ繰り越す。
  */
 export function dueDateForMonth(
+  schedule: RecurringSchedule,
+  yearMonth: string
+): string | null {
+  const base = rawDueDateForMonth(schedule, yearMonth);
+  return base ? followingBusinessDay(base) : null;
+}
+
+/** 営業日の繰り越しをかける前の、指定月の支払予定日。 */
+function rawDueDateForMonth(
   schedule: RecurringSchedule,
   yearMonth: string
 ): string | null {

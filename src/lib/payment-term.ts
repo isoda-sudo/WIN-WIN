@@ -46,6 +46,31 @@ function toPrecedingBusinessDay(date: Date): Date {
   return adjusted;
 }
 
+/** 土日・祝日・年末年始の場合、翌営業日まで繰り越す（月をまたぐことがある）。 */
+function toFollowingBusinessDay(date: Date): Date {
+  const adjusted = new Date(date);
+  while (!isBusinessDay(adjusted)) {
+    adjusted.setDate(adjusted.getDate() + 1);
+  }
+  return adjusted;
+}
+
+const ISO_DATE_RE = /^(\d{4})-(\d{2})-(\d{2})$/;
+
+/**
+ * "YYYY-MM-DD" が土日・祝日・年末年始なら、翌営業日の "YYYY-MM-DD" を返す（営業日ならそのまま）。
+ * 形式が不正なら入力をそのまま返す。工事外の定期支払いの期日に使う。
+ */
+export function followingBusinessDay(isoDate: string): string {
+  const m = ISO_DATE_RE.exec(isoDate);
+  if (!m) {
+    return isoDate;
+  }
+  const date = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+  const next = toFollowingBusinessDay(date);
+  return `${next.getFullYear()}-${String(next.getMonth() + 1).padStart(2, "0")}-${String(next.getDate()).padStart(2, "0")}`;
+}
+
 // 締め日は「引渡月末締め」に一本化されているため、選択肢は月末のみ。
 // 旧データ（15日締め等）が残っていても、この技術的なドメインには含めない
 // （画面上に選択肢として出さず、計算上も常に月末締めとして扱う）。
@@ -53,8 +78,8 @@ export const PAYMENT_CLOSING_DAYS = ["末"] as const;
 export type PaymentClosingDay = (typeof PAYMENT_CLOSING_DAYS)[number];
 const DEFAULT_CLOSING_DAY: PaymentClosingDay = "末";
 
-export const PAYMENT_DUE_DAYS = ["5", "10", "15", "20", "25", "末"] as const;
-export type PaymentDueDay = (typeof PAYMENT_DUE_DAYS)[number];
+const PAYMENT_DUE_DAYS = ["5", "10", "15", "20", "25", "末"] as const;
+type PaymentDueDay = (typeof PAYMENT_DUE_DAYS)[number];
 // 新規に使う既定は「引渡月末締・翌々月5日払い」（D-07/D-13）。
 const DEFAULT_DUE_DAY: PaymentDueDay = "5";
 

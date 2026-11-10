@@ -6,7 +6,7 @@ import { fiscalPeriodOfMonth } from "~/lib/fiscal-period";
  */
 const NEW_PROJECT_NO_RE = /^WW(\d{2})-(\d{3})$/;
 
-export interface ProjectOrderKey {
+interface ProjectOrderKey {
   id: number;
   projectNo: string | null;
 }
@@ -55,13 +55,13 @@ export function compareProjectsById(
 
 const NUMERIC_ONLY_RE = /^\d+$/;
 
-export interface ProjectSearchKey extends ProjectOrderKey {
+interface ProjectSearchKey extends ProjectOrderKey {
   client: string;
   deliveryMonth: string | null;
   name: string;
 }
 
-/** 受注一覧の検索語との一致（数字のみ=内部id一致、それ以外=工事名・発注元・案件IDの部分一致）。 */
+/** 受注一覧の検索語との一致（数字のみ=内部id一致、それ以外=工事名・クライアント・案件IDの部分一致）。 */
 export function projectMatchesKeyword(
   p: ProjectSearchKey,
   keyword: string

@@ -4,7 +4,7 @@
  * 裏の画面の通信を間引くため、短い時間で解除すると、操作中の人から編集権を奪ってしまう）。
  * 画面を閉じたときは、その場で手放す。
  */
-export const LOCK_IDLE_TIMEOUT_MINUTES = 15;
+const LOCK_IDLE_TIMEOUT_MINUTES = 15;
 
 const MS_PER_MINUTE = 60 * 1000;
 

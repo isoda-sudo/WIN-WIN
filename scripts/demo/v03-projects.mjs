@@ -87,12 +87,12 @@ await v.say(
   }
 );
 await v.say(
-  "絞り込みを、すべてに戻します。次に、検索欄に、宝ヶ池と入力します。案件ID、工事名、発注元で検索できます。",
+  "絞り込みを、すべてに戻します。次に、検索欄に、宝ヶ池と入力します。案件ID、工事名、クライアントで検索できます。",
   async (p) => {
     await pick(p.getByRole("combobox").nth(0), "すべての月");
     await pick(p.getByRole("combobox").nth(1), "すべてのステータス");
     await p
-      .getByPlaceholder("案件ID・工事名・発注元で検索")
+      .getByPlaceholder("案件ID・工事名・クライアントで検索")
       .pressSequentially("宝ヶ池", { delay: 120 });
     await sleep(1500);
     chk(
@@ -100,7 +100,7 @@ await v.say(
       (await rows()) <= 4 && (await rows()) >= 1,
       `${await rows()}行`
     );
-    await p.getByPlaceholder("案件ID・工事名・発注元で検索").fill("");
+    await p.getByPlaceholder("案件ID・工事名・クライアントで検索").fill("");
     await sleep(800);
   }
 );
@@ -124,7 +124,7 @@ await v.say(
 );
 
 await v.say(
-  "案件を追加します。表の下の、行を追加、を押します。工事名、発注元、工期、引渡月を入力します。",
+  "案件を追加します。表の一番上の、行を追加、を押します。工事名、クライアント、工期、引渡月を入力します。",
   async (p) => {
     await p.getByRole("button", { name: "行を追加" }).click();
     await sleep(1200);

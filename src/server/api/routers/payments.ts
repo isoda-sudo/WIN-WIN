@@ -2,6 +2,8 @@ import { TRPCError } from "@trpc/server";
 import { and, eq, isNull, ne, or } from "drizzle-orm";
 import { z } from "zod";
 import { actualPaidAmount } from "~/lib/actual-paid";
+import { jstDateParts } from "~/lib/fiscal-period";
+import { isMonthOver, monthOf } from "~/lib/month-lock";
 import {
   MAX_PAYMENT_METHOD_LENGTH,
   MISC_STATUS_PAID,
@@ -11,17 +13,27 @@ import {
 import { SUPERSEDED_STATUS } from "~/lib/superseded";
 import {
   accountingOrAdminProcedure,
+  adminProcedure,
   createTRPCRouter,
   financialReadProcedure,
 } from "~/server/api/trpc";
-import { logAudit } from "~/server/audit/log";
+import { diffChanges, logAudit } from "~/server/audit/log";
 import { db } from "~/server/db";
-import { miscPayments, orders, projects } from "~/server/db/schema";
+import {
+  miscPaymentMonthLocks,
+  miscPayments,
+  orders,
+  projects,
+} from "~/server/db/schema";
 import {
   assertActiveCategory,
   currentJstYearMonth,
   nextMiscPaymentNoTx,
 } from "~/server/payments/misc-payment";
+import {
+  assertMonthsUnlocked,
+  loadLockedMonths,
+} from "~/server/payments/month-lock";
 import {
   assertActiveCompanyAccount,
   computeTransferFee,
@@ -122,6 +134,48 @@ export const paymentsRouter = createTRPCRouter({
   }),
 
   // 案件外支払（工事外費用・給与その他） — orders/projects とは無関係の独立テーブル
+  // 工事外の月ごとの確定（ロック）。受注一覧の確定と同じく、管理者のみ・その月の末日を過ぎてから。
+  monthLock: createTRPCRouter({
+    list: financialReadProcedure.query(async () => [
+      ...(await loadLockedMonths(db)),
+    ]),
+
+    set: adminProcedure
+      .input(
+        z.object({
+          month: z
+            .string()
+            .refine((v) => monthOf(v) === v, "YYYY-MM 形式で指定してください"),
+          locked: z.boolean(),
+        })
+      )
+      .mutation(async ({ ctx, input }) => {
+        if (input.locked) {
+          if (!isMonthOver(input.month, jstDateParts())) {
+            throw new TRPCError({
+              code: "BAD_REQUEST",
+              message: "確定は、その月の末日を過ぎてから行えます",
+            });
+          }
+          await db
+            .insert(miscPaymentMonthLocks)
+            .values({ period: input.month, lockedBy: ctx.user.id })
+            .onConflictDoNothing();
+        } else {
+          await db
+            .delete(miscPaymentMonthLocks)
+            .where(eq(miscPaymentMonthLocks.period, input.month));
+        }
+        await logAudit(ctx.user.id, "UPDATE", "misc_payments", 0, {
+          name: `工事外の支払い予定表 ${input.month}`,
+          changes: [
+            input.locked ? "月を確定しました" : "月の確定を解除しました",
+          ],
+        });
+        return { month: input.month, locked: input.locked };
+      }),
+  }),
+
   misc: createTRPCRouter({
     list: financialReadProcedure.query(
       async () =>
@@ -146,6 +200,7 @@ export const paymentsRouter = createTRPCRouter({
       )
       .mutation(async ({ ctx, input }) => {
         const created = await db.transaction(async (tx) => {
+          await assertMonthsUnlocked(tx, [input.paymentDate]);
           await assertActiveCategory(tx, input.category);
           if (input.companyAccountId != null) {
             await assertActiveCompanyAccount(tx, input.companyAccountId);
@@ -214,6 +269,8 @@ export const paymentsRouter = createTRPCRouter({
             message: "支払が見つかりません",
           });
         }
+        // 確定済みの月（変更前・変更後の期日の月）の支払いは変更できない
+        await assertMonthsUnlocked(db, [before.paymentDate, input.paymentDate]);
         // 既存の旧値（マスタ未登録の過去カテゴリ）は据え置きなら許容、変更時のみマスタ検証。
         if (input.category != null && input.category !== before.category) {
           await assertActiveCategory(db, input.category);
@@ -234,16 +291,19 @@ export const paymentsRouter = createTRPCRouter({
           companyAccountId,
         };
         const transferFee = await resolveFeeOnUpdate(before, next);
+        const merged = {
+          category: input.category ?? before.category,
+          payee: input.payee ?? before.payee,
+          amount: input.amount ?? before.amount,
+          paymentDate: input.paymentDate ?? before.paymentDate,
+          status: input.status ?? before.status,
+          notes: input.notes ?? before.notes,
+        };
         await db
           .update(miscPayments)
           .set({
-            category: input.category ?? before.category,
+            ...merged,
             type: input.type ?? before.type,
-            payee: input.payee ?? before.payee,
-            amount: input.amount ?? before.amount,
-            paymentDate: input.paymentDate ?? before.paymentDate,
-            status: input.status ?? before.status,
-            notes: input.notes ?? before.notes,
             companyAccountId,
             transferFee,
             paymentMethod:
@@ -254,8 +314,9 @@ export const paymentsRouter = createTRPCRouter({
           .where(eq(miscPayments.id, input.id));
         await logAudit(ctx.user.id, "UPDATE", "misc_payments", input.id, {
           name: `${before.category || input.category || ""}（${before.payee || input.payee || ""}）`,
+          // 金額・期日・ステータス・相手先などの変更前後を残す
           changes: [
-            "更新",
+            ...diffChanges("misc_payments", before, merged),
             ...feeMethodChanges(before, { ...input, transferFee }),
           ],
         });
@@ -319,6 +380,7 @@ export const paymentsRouter = createTRPCRouter({
             message: "支払が見つかりません",
           });
         }
+        await assertMonthsUnlocked(db, [before.paymentDate]);
         // 支払No付き・定期支払い由来の行は保存義務と番号の再利用防止のため削除できない
         if (before.recurringId !== null || before.paymentNo !== null) {
           throw new TRPCError({

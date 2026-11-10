@@ -42,7 +42,7 @@
   - 追加した依存: `otpauth`（MIT）、`qrcode`（MIT）、`@types/qrcode`（MIT、開発用）
   - こちらの bun 1.4.2 で再生成した際、使われていない `@playwright/test` / `playwright` の行が lockfile から消えています（package.json には元々ありません）
 - [ ] `bun run check` / `bun run typecheck` / `bun run test` が通る（こちらでは 561 件すべて成功、2026-10-23）
-- [ ] 参考: `bun run check:adr` は ADR-0006 の番号重複（PR #35 由来、既知）で失敗します。このブランチの ADR-0016 は問題ありません
+- [ ] 参考: `bun run check:adr` は ADR-0006 の番号重複で失敗していましたが、請求書PDFのADRを 0022 に改番して解消しました。このブランチの ADR-0016 は問題ありません
 
 ## 2. デプロイ（鍵はまだ設定しない）
 

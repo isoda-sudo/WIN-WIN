@@ -33,6 +33,8 @@ import {
 import { Textarea } from "~/components/ui/textarea";
 import { type EmailContact, toContactList } from "~/lib/contacts";
 import { compareAsc, compareDesc, type SortOption } from "~/lib/list-sort";
+import { canWriteMaster } from "~/lib/roles";
+import { isHttpUrl } from "~/lib/safe-url";
 import { useSortedPagedList } from "~/lib/use-sorted-paged-list";
 import { api, type RouterOutputs } from "~/trpc/react";
 
@@ -119,7 +121,8 @@ export default function CustomersPage() {
     refetch,
   } = api.customers.list.useQuery();
   const { data: me } = api.users.me.useQuery();
-  const canEdit = me?.role === "admin";
+  const canEdit = canWriteMaster(me?.role);
+  // 新規・編集・削除は、管理者・経理・一般社員ができる
   const [keyword, setKeyword] = useState("");
   const [editing, setEditing] = useState<Customer | null>(null);
   const [creating, setCreating] = useState(false);
@@ -141,6 +144,7 @@ export default function CustomersPage() {
   }, [customers, keyword]);
 
   const paged = useSortedPagedList({
+    initialShowAll: true,
     options: SORT_OPTIONS,
     resetKey: keyword,
     rows: filtered,
@@ -231,7 +235,7 @@ export default function CustomersPage() {
             案件の相手方となる顧客企業を管理します
           </p>
         </div>
-        <div className="flex flex-nowrap items-end gap-2">
+        <div className="flex flex-wrap items-end gap-2 md:flex-nowrap">
           <Input
             className="h-8 min-w-32 flex-1"
             onChange={(e) => setKeyword(e.target.value)}
@@ -323,10 +327,10 @@ export default function CustomersPage() {
                 </TableCell>
                 <TableCell>{c.companyScale || "-"}</TableCell>
                 <TableCell>
-                  {c.website ? (
+                  {isHttpUrl(c.website) ? (
                     <Link
                       className="text-primary hover:underline"
-                      href={c.website}
+                      href={c.website ?? "#"}
                       onClick={(e) => e.stopPropagation()}
                       rel="noopener noreferrer"
                       target="_blank"
@@ -407,8 +411,8 @@ function CustomerForm({
     useZipCodeLookup((address) => set("address", address));
 
   return (
-    <div className="grid grid-cols-2 gap-4">
-      <div className="col-span-2 flex flex-col gap-2">
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <div className="flex flex-col gap-2 sm:col-span-2">
         <Label>企業名 *</Label>
         <Input
           onChange={(e) => set("company", e.target.value)}
@@ -470,14 +474,14 @@ function CustomerForm({
           </Button>
         </div>
       </div>
-      <div className="col-span-2 flex flex-col gap-2">
+      <div className="flex flex-col gap-2 sm:col-span-2">
         <Label>住所</Label>
         <Input
           onChange={(e) => set("address", e.target.value)}
           value={form.address}
         />
       </div>
-      <div className="col-span-2 flex flex-col gap-4 rounded-md border p-4">
+      <div className="flex flex-col gap-4 rounded-md border p-4 sm:col-span-2">
         <ContactListEditor
           contacts={form.toContacts}
           label="TO担当者"
@@ -504,7 +508,7 @@ function CustomerForm({
           value={form.companyScale}
         />
       </div>
-      <div className="col-span-2 flex flex-col gap-2">
+      <div className="flex flex-col gap-2 sm:col-span-2">
         <Label>コーポレートサイト</Label>
         <Input
           onChange={(e) => set("website", e.target.value)}
@@ -512,7 +516,7 @@ function CustomerForm({
           value={form.website}
         />
       </div>
-      <div className="col-span-2 flex flex-col gap-2">
+      <div className="flex flex-col gap-2 sm:col-span-2">
         <Label>備考</Label>
         <Textarea
           onChange={(e) => set("notes", e.target.value)}

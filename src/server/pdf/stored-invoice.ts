@@ -6,6 +6,10 @@ import {
   orders,
   type projects,
 } from "~/server/db/schema";
+import {
+  displayNoFor,
+  loadInvoiceDisplayContext,
+} from "~/server/invoices/display-no";
 import { buildInvoicePDF } from "~/server/pdf/document";
 
 type InvoiceRow = typeof invoices.$inferSelect;
@@ -40,7 +44,8 @@ export async function resolveStoredInvoicePdf(
     project,
     orderRows,
     null,
-    invoice.invoiceNo ?? undefined,
+    displayNoFor(invoice, await loadInvoiceDisplayContext(db, project.id)) ||
+      undefined,
     {
       dueDate: invoice.dueDate ? new Date(invoice.dueDate) : new Date(),
       items: invoice.items,

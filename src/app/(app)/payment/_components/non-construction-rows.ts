@@ -47,7 +47,7 @@ export function rowStatus(row: NonConstructionRow): "未払い" | "支払済み"
   );
 }
 
-export function rowDueDate(row: NonConstructionRow): string {
+function rowDueDate(row: NonConstructionRow): string {
   return (
     (row.kind === "misc" ? row.misc.paymentDate : row.recurring.dueDate) ?? ""
   );
@@ -58,7 +58,7 @@ export function rowAmount(row: NonConstructionRow): number {
 }
 
 /** 行の振込手数料（工事外の支払。未算出は0）。 */
-export function rowFee(row: NonConstructionRow): number {
+function rowFee(row: NonConstructionRow): number {
   return (
     (row.kind === "misc" ? row.misc.transferFee : row.recurring.transferFee) ??
     0

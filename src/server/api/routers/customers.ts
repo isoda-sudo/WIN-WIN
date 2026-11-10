@@ -2,10 +2,11 @@ import { TRPCError } from "@trpc/server";
 import { eq, isNull } from "drizzle-orm";
 import { z } from "zod";
 import { MAX_CONTACTS } from "~/lib/contacts";
+import { websiteSchema } from "~/lib/website-schema";
 import {
-  adminProcedure,
   createTRPCRouter,
   masterReadableProcedure,
+  masterWriteProcedure,
 } from "~/server/api/trpc";
 import { diffChanges, logAudit } from "~/server/audit/log";
 import { db } from "~/server/db";
@@ -30,7 +31,7 @@ const customerUpsertShape = {
   notes: z.string().nullish(),
   capital: z.number().nullish(),
   companyScale: z.string().nullish(),
-  website: z.string().nullish(),
+  website: websiteSchema,
   toContacts: contactListSchema.optional(),
   ccContacts: contactListSchema.optional(),
 };
@@ -43,7 +44,7 @@ export const customersRouter = createTRPCRouter({
     })
   ),
 
-  create: adminProcedure
+  create: masterWriteProcedure
     .input(z.object(customerUpsertShape))
     .mutation(async ({ ctx, input }) => {
       const [row] = await db
@@ -75,7 +76,7 @@ export const customersRouter = createTRPCRouter({
       return { id: row.id, ...input };
     }),
 
-  update: adminProcedure
+  update: masterWriteProcedure
     .input(z.object({ id: z.number(), ...customerUpsertShape }))
     .mutation(async ({ ctx, input }) => {
       const before = await db.query.customers.findFirst({
@@ -107,7 +108,7 @@ export const customersRouter = createTRPCRouter({
       return input;
     }),
 
-  delete: adminProcedure
+  delete: masterWriteProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
       const before = await db.query.customers.findFirst({

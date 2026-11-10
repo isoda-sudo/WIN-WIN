@@ -4,10 +4,12 @@ import type { VendorConcentrationRow } from "~/lib/reporting-concentration";
 import { cn } from "~/lib/utils";
 import { yen } from "../../_components/format";
 
-/** 件数ブロックの最大数。この件数以上は、ブロックを赤にして集中（偏り）を目立たせる。正確な件数は右の数字で見る。 */
-const MAX_COUNT_BLOCKS = 10;
-/** 金額の棒が横幅いっぱいになる金額（5,000万円）。これを超える発注先も、棒は横幅いっぱいで止める。 */
-const MAX_AMOUNT_BAR = 50_000_000;
+/** 件数の棒が横幅いっぱいになる件数。これを超える（100件超）と赤にして、集中（偏り）を目立たせる。 */
+const MAX_COUNT_BAR = 100;
+/** 件数の棒に引く中間線の件数。 */
+const MID_COUNT_LINE = 50;
+/** 金額の棒が横幅いっぱいになる金額（1億円）。これを超える発注先も、棒は横幅いっぱいで止める。 */
+const MAX_AMOUNT_BAR = 100_000_000;
 
 function Legend() {
   return (
@@ -18,7 +20,7 @@ function Legend() {
       </span>
       <span className="flex items-center gap-1.5">
         <span className="inline-block h-2.5 w-5 rounded-sm bg-sky-500" />
-        発注件数
+        発注件数（100件で満点、中間線は50件、100件超は赤）
       </span>
     </div>
   );
@@ -68,25 +70,25 @@ export function VendorCharts({ rows }: Props) {
                   }}
                 />
               </div>
-              {/* 金額の棒と同じ横幅を10等分した枠。件数ぶん塗り、10件で横幅いっぱいになる */}
+              {/* 件数の棒。100件で横幅いっぱい、50件の位置に中間線、100件超は赤 */}
               <div
                 aria-label={`${r.count}件`}
-                className="grid grid-cols-10 gap-1"
+                className="relative h-2 overflow-hidden rounded-full bg-muted"
                 role="img"
               >
-                {Array.from({ length: MAX_COUNT_BLOCKS }, (_, n) => (
-                  <span
-                    className={cn(
-                      "h-2 rounded-sm",
-                      n >= r.count && "bg-muted/60",
-                      n < r.count &&
-                        (r.count >= MAX_COUNT_BLOCKS
-                          ? "bg-red-500"
-                          : "bg-sky-500")
-                    )}
-                    key={`${r.vendor}-${n.toString()}`}
-                  />
-                ))}
+                <div
+                  className={cn(
+                    "h-full rounded-full",
+                    r.count > MAX_COUNT_BAR ? "bg-red-500" : "bg-sky-500"
+                  )}
+                  style={{
+                    width: `${Math.min((r.count / MAX_COUNT_BAR) * 100, 100)}%`,
+                  }}
+                />
+                <span
+                  className="absolute inset-y-0 w-px bg-foreground/40"
+                  style={{ left: `${(MID_COUNT_LINE / MAX_COUNT_BAR) * 100}%` }}
+                />
               </div>
             </div>
             <span className="flex flex-col text-right tabular-nums sm:order-4">

@@ -5,7 +5,7 @@
  */
 
 /** 集計から除外する案件ステータス。 */
-export const PROFIT_EXCLUDED_STATUSES = ["オーダー移行", "失注"] as const;
+const PROFIT_EXCLUDED_STATUSES = ["オーダー移行", "失注"] as const;
 
 const PERCENT = 100;
 const ROUND_UNIT = 10;
@@ -32,7 +32,7 @@ export function calcGrossMarginRate(
   return roundRate((profit / revenue) * PERCENT);
 }
 
-export interface ProfitProjectInput {
+interface ProfitProjectInput {
   client: string;
   clientCompany: string | null;
   cost: number;
@@ -126,7 +126,7 @@ export interface TrendPoint {
   revenue: number;
 }
 
-export interface TrendProjectInput {
+interface TrendProjectInput {
   client: string;
   clientCompany: string | null;
   cost: number;

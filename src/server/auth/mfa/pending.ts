@@ -14,7 +14,7 @@ import type { MfaFailure } from "./service";
 
 export const NO_STORE = { "Cache-Control": "no-store" };
 
-export type PendingUser = LoginUser & { role: string };
+type PendingUser = LoginUser & { role: string };
 
 /** The user behind a valid pending cookie at `stage`, re-checked against the live DB row. */
 export async function resolvePendingUser(

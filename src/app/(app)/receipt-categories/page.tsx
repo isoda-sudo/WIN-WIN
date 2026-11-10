@@ -5,6 +5,7 @@ import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "~/components/ui/button";
 import { type DropPosition, insertId } from "~/lib/manual-order";
+import { canEditSettingsMaster } from "~/lib/roles";
 import { api } from "~/trpc/react";
 import {
   ReceiptCategoryDialogs,
@@ -65,8 +66,8 @@ export default function ReceiptCategoriesPage() {
     refetch,
   } = api.receiptCategories.list.useQuery();
   const { data: me } = api.users.me.useQuery();
-  // 編集は管理者のみ（経理は閲覧専用）。ロール確定前は編集不可として扱う
-  const canEdit = me?.role === "admin";
+  // 編集は管理者・経理。ロール確定前は編集不可として扱う
+  const canEdit = canEditSettingsMaster(me?.role);
   const [editing, setEditing] = useState<ReceiptCategory | null>(null);
   const [creating, setCreating] = useState(false);
   const [confirmingDelete, setConfirmingDelete] = useState(false);

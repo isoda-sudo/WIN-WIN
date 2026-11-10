@@ -19,7 +19,7 @@ export interface LoginUser {
   tokenVersion: number | null;
 }
 
-export const MFA_NEXT_PATH = {
+const MFA_NEXT_PATH = {
   verify: "/login/verify",
   enroll: "/login/mfa-setup",
 } as const;

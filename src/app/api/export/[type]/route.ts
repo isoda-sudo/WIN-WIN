@@ -2,11 +2,12 @@ import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { type NextRequest, NextResponse } from "next/server";
 import { actualReceivedAmount } from "~/lib/actual-received";
 import { jstDateString } from "~/lib/paid-at";
+import { FINANCIAL_READ_ROLES, isTaxAdvisor } from "~/lib/roles";
 import { SUPERSEDED_STATUS } from "~/lib/superseded";
 import { resolveAuthedUser } from "~/server/auth/session";
 import { escapeCsvValue } from "~/server/csv/csv-escape";
 import { db } from "~/server/db";
-import { orders, projects } from "~/server/db/schema";
+import { miscPayments, orders, projects } from "~/server/db/schema";
 
 export const runtime = "nodejs";
 
@@ -25,7 +26,7 @@ function toCsv(rows: Record<string, unknown>[], headers: CsvHeader[]): string {
   return `﻿${head}\n${body}`;
 }
 
-const EXPORT_TYPES = ["sales", "plan", "payments"] as const;
+const EXPORT_TYPES = ["sales", "plan", "payments", "misc-payments"] as const;
 type ExportType = (typeof EXPORT_TYPES)[number];
 
 function isExportType(value: string): value is ExportType {
@@ -118,6 +119,45 @@ async function buildPlanCsv(projectId: number | null): Promise<string> {
   ]);
 }
 
+const YEAR_MONTH_RE = /^\d{4}-(0[1-9]|1[0-2])$/;
+
+/** 工事外の支払い（単発・定期）の一覧。税理士へ渡す用。month（YYYY-MM）を渡すと、支払予定日がその月のものだけ。 */
+async function buildMiscPaymentsCsv(month: string | null): Promise<string> {
+  const rows = await db
+    .select()
+    .from(miscPayments)
+    .where(
+      month ? sql`${miscPayments.paymentDate} like ${`${month}-%`}` : undefined
+    )
+    .orderBy(asc(miscPayments.paymentDate), asc(miscPayments.id));
+  return toCsv(
+    rows.map((m) => ({
+      payment_no: m.paymentNo,
+      category: m.category,
+      payee: m.payee,
+      amount: m.amount,
+      fee: m.transferFee,
+      due: m.paymentDate,
+      method: m.paymentMethod,
+      status: m.status,
+      kind: m.recurringId ? "定期" : "単発",
+      notes: m.notes,
+    })),
+    [
+      { key: "payment_no", label: "支払番号" },
+      { key: "category", label: "区分" },
+      { key: "payee", label: "名称/支払先" },
+      { key: "amount", label: "支払金額" },
+      { key: "fee", label: "振込手数料" },
+      { key: "due", label: "支払予定日" },
+      { key: "method", label: "支払方法" },
+      { key: "status", label: "支払ステータス" },
+      { key: "kind", label: "種別" },
+      { key: "notes", label: "備考" },
+    ]
+  );
+}
+
 async function buildPaymentsCsv(): Promise<string> {
   const rows = (await loadOrderRows(null)).map(({ order: o, project: p }) => ({
     payment_no: o.paymentNo,
@@ -166,6 +206,19 @@ export async function GET(
     );
   }
 
+  // 売上・支払いのCSVは、売上管理表・支払い予定表を見られるロール（管理者・経理・税理士）だけ。
+  // 工事計画のCSV（顧客名・発注先・金額）は、税理士・社労士には出さない。
+  const allowed =
+    type === "plan"
+      ? !isTaxAdvisor(user.role)
+      : (FINANCIAL_READ_ROLES as readonly string[]).includes(user.role ?? "");
+  if (!allowed) {
+    return NextResponse.json({ error: "権限がありません" }, { status: 403 });
+  }
+
+  const monthParam = req.nextUrl.searchParams.get("month");
+  const month =
+    monthParam && YEAR_MONTH_RE.test(monthParam) ? monthParam : null;
   const projectIdParam = Number(req.nextUrl.searchParams.get("projectId"));
   const projectId =
     Number.isInteger(projectIdParam) && projectIdParam > 0
@@ -175,6 +228,7 @@ export async function GET(
     sales: buildSalesCsv,
     plan: () => buildPlanCsv(projectId),
     payments: buildPaymentsCsv,
+    "misc-payments": () => buildMiscPaymentsCsv(month),
   };
   const csv = await builders[type]();
 

@@ -48,7 +48,7 @@ function validateForm(form: MiscReceiptFormState): number | null {
   return value;
 }
 
-export interface MiscReceiptDialogState {
+interface MiscReceiptDialogState {
   creating: boolean;
   deleteTarget: MiscReceipt | null;
   editing: MiscReceipt | null;

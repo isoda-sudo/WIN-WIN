@@ -12,7 +12,9 @@ import {
   TableRow,
 } from "~/components/ui/table";
 
-export interface SavedInvoiceRow {
+interface SavedInvoiceRow {
+  /** 表示用の請求書番号（通常は案件ID、分割は末尾に①〜⑤）。 */
+  displayNo?: string;
   hasStoredPdf: boolean;
   id: number;
   invoiceId: number;
@@ -40,6 +42,7 @@ export function SavedInvoicesTable<T extends SavedInvoiceRow>({
       <TableHeader>
         <TableRow>
           <TableHead>日時</TableHead>
+          <TableHead>請求書番号</TableHead>
           <TableHead className="w-16">区分</TableHead>
           <TableHead className="text-right">請求金額</TableHead>
           <TableHead className="w-20" />
@@ -60,6 +63,9 @@ export function SavedInvoicesTable<T extends SavedInvoiceRow>({
             }}
           >
             <TableCell>{formatSavedAt(inv.uploadedAt)}</TableCell>
+            <TableCell className="tabular-nums">
+              {inv.displayNo ?? "-"}
+            </TableCell>
             <TableCell>
               {inv.isSplit && <Badge variant="secondary">分割</Badge>}
             </TableCell>

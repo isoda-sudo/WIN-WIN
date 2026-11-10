@@ -36,8 +36,8 @@ const config = {
   // tracer can't discover it on its own — without this it would be silently
   // dropped from the Vercel deployment bundle.
   outputFileTracingIncludes: {
-    "/api/po/[orderId]": ["./fonts/jp.ttc"],
-    "/api/po/send": ["./fonts/jp.ttc"],
+    "/api/po/[orderId]": ["./fonts/jp.ttc", "./assets/company-seal.png"],
+    "/api/po/send": ["./fonts/jp.ttc", "./assets/company-seal.png"],
     "/api/invoice/project/[projectId]": [
       "./fonts/jp.ttc",
       "./assets/company-seal.png",

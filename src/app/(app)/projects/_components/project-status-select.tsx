@@ -21,7 +21,7 @@ import {
 } from "~/lib/status-styles";
 import { cn } from "~/lib/utils";
 
-export const STATUS_LOCKED_TOOLTIP =
+const STATUS_LOCKED_TOOLTIP =
   "この先は契約書アップ・請求書発行・入金登録で自動的に更新されます";
 
 /**

@@ -118,8 +118,8 @@ function RuleDialog({
         <DialogHeader>
           <DialogTitle>手数料ルールを追加</DialogTitle>
         </DialogHeader>
-        <div className="grid grid-cols-2 gap-4">
-          <div className="col-span-2 flex flex-col gap-2">
+        <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+          <div className="flex flex-col gap-2 sm:col-span-2">
             <Label>宛先区分</Label>
             <Select
               onValueChange={(v) => set("bankScope", v as BankScope)}
@@ -155,7 +155,7 @@ function RuleDialog({
               value={form.amountTo}
             />
           </div>
-          <div className="col-span-2 flex flex-col gap-2">
+          <div className="flex flex-col gap-2 sm:col-span-2">
             <Label>振込手数料（円）</Label>
             <Input
               min={0}

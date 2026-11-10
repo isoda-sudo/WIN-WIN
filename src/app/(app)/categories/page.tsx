@@ -26,6 +26,7 @@ import {
 } from "~/components/ui/table";
 import { Textarea } from "~/components/ui/textarea";
 import { compareAsc, compareDesc, type SortOption } from "~/lib/list-sort";
+import { canWriteMaster } from "~/lib/roles";
 import { useSortedPagedList } from "~/lib/use-sorted-paged-list";
 import { api, type RouterOutputs } from "~/trpc/react";
 import { CategoryRow } from "./_components/category-row";
@@ -74,7 +75,8 @@ export default function CategoriesPage() {
   const utils = api.useUtils();
   const { data: categories, isLoading } = api.categories.list.useQuery();
   const { data: me } = api.users.me.useQuery();
-  const canEdit = me?.role === "admin";
+  const canEdit = canWriteMaster(me?.role);
+  // 新規・編集・削除は、管理者・経理・一般社員ができる
   const [keyword, setKeyword] = useState("");
   const [editing, setEditing] = useState<Category | null>(null);
   const [creating, setCreating] = useState(false);
@@ -95,6 +97,7 @@ export default function CategoriesPage() {
   }, [categories, keyword]);
 
   const paged = useSortedPagedList({
+    initialShowAll: true,
     options: SORT_OPTIONS,
     resetKey: keyword,
     rows: filtered,
@@ -172,7 +175,7 @@ export default function CategoriesPage() {
             工種の一覧を管理します
           </p>
         </div>
-        <div className="flex flex-nowrap items-end gap-2">
+        <div className="flex flex-wrap items-end gap-2 md:flex-nowrap">
           <Input
             className="h-8 min-w-32 flex-1"
             onChange={(e) => setKeyword(e.target.value)}
@@ -292,19 +295,19 @@ function CategoryForm({
     setForm({ ...form, [key]: value });
 
   return (
-    <div className="grid grid-cols-2 gap-4">
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
       <div className="flex flex-col gap-2">
         <Label>コード</Label>
         <Input disabled placeholder="自動採番" value={code ?? ""} />
       </div>
-      <div className="col-span-2 flex flex-col gap-2">
+      <div className="flex flex-col gap-2 sm:col-span-2">
         <Label>工種名称 *</Label>
         <Input
           onChange={(e) => set("name", e.target.value)}
           value={form.name}
         />
       </div>
-      <div className="col-span-2 flex flex-col gap-2">
+      <div className="flex flex-col gap-2 sm:col-span-2">
         <Label>備考</Label>
         <Textarea
           onChange={(e) => set("note", e.target.value)}

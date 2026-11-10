@@ -16,7 +16,7 @@ import {
 } from "lucide-react";
 import { type AppRoute, pageAccess } from "~/lib/roles";
 
-export interface NavLink {
+interface NavLink {
   /** 現在地の判定を完全一致のみにする（親リンクが子ページで光らないように）。 */
   exact?: boolean;
   href: AppRoute | `${AppRoute}/${string}`;
@@ -32,7 +32,7 @@ export interface NavGroup {
   label: string;
 }
 
-export type NavEntry = NavLink | NavGroup;
+type NavEntry = NavLink | NavGroup;
 
 export function isNavGroup(entry: NavEntry): entry is NavGroup {
   return "children" in entry;
@@ -43,7 +43,7 @@ export function isNavGroup(entry: NavEntry): entry is NavGroup {
  * から導出する（権限表が唯一の定義元）。
  * 工事計画（/orders-list）は受注一覧から遷移する画面のためサイドバーには出さない。
  */
-export const NAV_ITEMS: NavEntry[] = [
+const NAV_ITEMS: NavEntry[] = [
   {
     icon: LayoutDashboard,
     label: "レポーティング",
@@ -80,7 +80,7 @@ export const NAV_ITEMS: NavEntry[] = [
   { href: "/invite", icon: UserPlus, label: "アカウント発行" },
 ];
 
-export function visibleFor(entry: NavEntry, role: string): NavEntry | null {
+function visibleFor(entry: NavEntry, role: string): NavEntry | null {
   if (isNavGroup(entry)) {
     const children = entry.children.filter((c) => pageAccess(role, c.href));
     return children.length ? { ...entry, children } : null;

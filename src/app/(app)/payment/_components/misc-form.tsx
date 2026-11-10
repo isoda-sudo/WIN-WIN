@@ -149,7 +149,7 @@ export function MiscPaymentForm({
   ) => setForm({ ...form, [key]: value });
 
   return (
-    <div className="grid grid-cols-2 gap-4">
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
       <div className="flex flex-col gap-2">
         <Label>種別</Label>
         <Input
@@ -167,7 +167,7 @@ export function MiscPaymentForm({
           value={form.category}
         />
       </div>
-      <div className="col-span-2 flex flex-col gap-2">
+      <div className="flex flex-col gap-2 sm:col-span-2">
         <Label>支払先</Label>
         <Input
           onChange={(e) => set("payee", e.target.value)}
@@ -205,7 +205,7 @@ export function MiscPaymentForm({
           ))}
         </datalist>
       </div>
-      <div className="col-span-2">
+      <div className="sm:col-span-2">
         <CompanyAccountSelect
           accounts={accounts}
           allowNone={false}
@@ -214,7 +214,7 @@ export function MiscPaymentForm({
           value={form.companyAccountId}
         />
       </div>
-      <div className="col-span-2 flex flex-col gap-2">
+      <div className="flex flex-col gap-2 sm:col-span-2">
         <Label>支払いステータス</Label>
         <Select onValueChange={(v) => set("status", v)} value={form.status}>
           <SelectTrigger className="w-full">
@@ -229,7 +229,7 @@ export function MiscPaymentForm({
           </SelectContent>
         </Select>
       </div>
-      <div className="col-span-2 flex flex-col gap-2">
+      <div className="flex flex-col gap-2 sm:col-span-2">
         <Label>備考</Label>
         <Input
           onChange={(e) => set("notes", e.target.value)}

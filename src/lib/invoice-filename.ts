@@ -10,7 +10,7 @@ const DATE_RE = /^(\d{4})[-/](\d{1,2})[-/](\d{1,2})/;
 const MAX_CLIENT_LENGTH = 60;
 const FALLBACK_CLIENT = "顧客名なし";
 
-export interface InvoiceFilenameInput {
+interface InvoiceFilenameInput {
   client: string | null | undefined;
   /** 請求日（YYYY-MM-DD / YYYY/MM/DD、または Date）。 */
   invoiceDate: string | Date | null | undefined;
@@ -22,9 +22,7 @@ function pad2(n: number): string {
   return String(n).padStart(2, "0");
 }
 
-export function formatCompactDate(
-  value: string | Date | null | undefined
-): string {
+function formatCompactDate(value: string | Date | null | undefined): string {
   if (value instanceof Date && !Number.isNaN(value.getTime())) {
     return `${value.getFullYear()}${pad2(value.getMonth() + 1)}${pad2(value.getDate())}`;
   }

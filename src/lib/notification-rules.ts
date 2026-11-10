@@ -10,8 +10,8 @@ import {
 } from "~/lib/payment-term";
 import { isContracted } from "~/lib/status-styles";
 
-export type NotificationAudience = "all" | "finance";
-export type NotificationLevel = "error" | "warning" | "info";
+type NotificationAudience = "all" | "finance";
+type NotificationLevel = "error" | "warning" | "info";
 
 /** 開封状態を覚えるためのキー（種類・対象・日付）。 */
 export function notificationKey(n: {
@@ -97,10 +97,7 @@ export function inWorkPeriod(
 }
 
 /** 工期が始まっているか（開始日が今日以前）。終了日は見ない。開始が無い・未到来は false。 */
-export function workStarted(
-  start: string | null | undefined,
-  today: string
-): boolean {
+function workStarted(start: string | null | undefined, today: string): boolean {
   const s = dateOnly(start);
   return Boolean(s) && (s as string) <= today;
 }

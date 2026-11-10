@@ -1,6 +1,6 @@
 "use client";
 
-import { Copy, Trash2 } from "lucide-react";
+import { Copy, Pencil, Trash2 } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { LoadMore } from "~/components/shared/load-more";
@@ -16,6 +16,7 @@ import {
 } from "~/components/ui/alert-dialog";
 import { Badge } from "~/components/ui/badge";
 import { Button } from "~/components/ui/button";
+import { Checkbox } from "~/components/ui/checkbox";
 import {
   Dialog,
   DialogContent,
@@ -386,6 +387,7 @@ export default function InviteClient({
                 <TableHead>ステータス</TableHead>
                 <TableHead>登録日</TableHead>
                 <TableHead>メール署名</TableHead>
+                <TableHead className="text-center">CC初期値</TableHead>
                 <TableHead>2段階認証</TableHead>
               </TableRow>
             </TableHeader>
@@ -393,7 +395,7 @@ export default function InviteClient({
               {accountsLoading &&
                 Array.from({ length: 5 }, (_, i) => (
                   <TableRow key={`skeleton-${i.toString()}`}>
-                    <TableCell colSpan={6}>
+                    <TableCell colSpan={7}>
                       <Skeleton className="h-6 w-full" />
                     </TableCell>
                   </TableRow>
@@ -470,7 +472,32 @@ export default function InviteClient({
   );
 }
 
-/** 2段階認証の状態と、管理者によるリセット（スマホ紛失時など）。 */
+/** 請求書・注文書のメール送信画面で、CCに最初から入れるアカウントのチェック。 */
+function CcDefaultCell({ account }: { account: Account }) {
+  const utils = api.useUtils();
+  const save = api.users.updateCcDefault.useMutation({
+    onError: (e) => toast.error(friendlyErrorMessage(e, "更新に失敗しました")),
+    onSuccess: async () => {
+      await Promise.all([
+        utils.users.list.invalidate(),
+        utils.users.ccDefaults.invalidate(),
+      ]);
+    },
+  });
+  return (
+    <div className="flex items-center justify-center">
+      <Checkbox
+        aria-label={`${account.name || account.email}をメールのCC初期値に入れる`}
+        checked={account.ccDefault}
+        disabled={save.isPending}
+        onCheckedChange={(c) =>
+          save.mutate({ id: account.id, ccDefault: c === true })
+        }
+      />
+    </div>
+  );
+}
+
 function MfaCell({
   enabled,
   isCurrentUser,
@@ -612,6 +639,7 @@ function AccountRow({
         <div className="flex flex-col">
           <span className="font-medium">
             {account.name || "-"}
+            <NameEditButton account={account} />
             {isCurrentUser && (
               <span className="ml-1 font-normal text-secondary-foreground text-xs">
                 （あなた）
@@ -643,8 +671,66 @@ function AccountRow({
       <TableCell>
         <SignatureCell account={account} disabled={false} />
       </TableCell>
+      <TableCell>
+        <CcDefaultCell account={account} />
+      </TableCell>
       <TableCell>{mfaCell}</TableCell>
     </TableRow>
+  );
+}
+
+/** アカウントの表示名の変更（管理者のみ。自分自身も可）。 */
+function NameEditButton({ account }: { account: Account }) {
+  const utils = api.useUtils();
+  const [open, setOpen] = useState(false);
+  const [draft, setDraft] = useState(account.name ?? "");
+  const save = api.users.updateName.useMutation({
+    onError: (e) =>
+      toast.error(friendlyErrorMessage(e, "名前の変更に失敗しました")),
+    onSuccess: async () => {
+      await utils.users.list.invalidate();
+      toast.success("名前を変更しました");
+      setOpen(false);
+    },
+  });
+  return (
+    <>
+      <Button
+        aria-label={`${account.email} の名前を変更`}
+        className="ml-1 align-middle"
+        onClick={() => {
+          setDraft(account.name ?? "");
+          setOpen(true);
+        }}
+        size="icon-xs"
+        title="名前を変更"
+        variant="ghost"
+      >
+        <Pencil />
+      </Button>
+      <Dialog onOpenChange={setOpen} open={open}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>名前を変更</DialogTitle>
+          </DialogHeader>
+          <p className="text-muted-foreground text-sm">{account.email}</p>
+          <Input
+            aria-label="名前"
+            maxLength={100}
+            onChange={(e) => setDraft(e.target.value)}
+            value={draft}
+          />
+          <DialogFooter>
+            <Button
+              disabled={save.isPending || draft.trim() === ""}
+              onClick={() => save.mutate({ id: account.id, name: draft })}
+            >
+              保存
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 

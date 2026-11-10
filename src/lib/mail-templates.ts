@@ -3,7 +3,7 @@
  * サーバー側でログインユーザーのものが末尾に付く（ここには含めない）。
  */
 
-export interface MailTemplate {
+interface MailTemplate {
   body: string;
   subject: string;
 }
@@ -14,25 +14,23 @@ export const INVOICE_NO_PLACEHOLDER = "{請求書番号}";
 /**
  * 請求書メール。
  * 件名: 【株式会社WINWIN】請求書送付の件 {請求書番号}
- * 本文: {会社名} / {担当者} 様 / システム送信の注記 / あいさつ / 【案件名/請求書番号】 / 結び
+ * 本文: {会社名} / {担当者} 様 / あいさつ / 【案件名/請求書番号】 / 結び
  * 請求書番号が未確定の間は {請求書番号} のままにしておき、送信時に実際の番号へ置き換わる。
  */
 export function invoiceMailTemplate(input: {
   clientName: string;
-  /** 顧客マスタのTO担当者名。未登録なら「ご担当者」とする。 */
+  /** 顧客マスタのTO担当者名。未登録（空欄）なら、宛名と敬称の行は出さない。 */
   contactName?: string | null;
   invoiceNo?: string | null;
   projectName: string;
 }): MailTemplate {
   const no = input.invoiceNo || INVOICE_NO_PLACEHOLDER;
-  const contact = input.contactName?.trim() || "ご担当者";
+  const contact = input.contactName?.trim() ?? "";
   return {
     subject: `【株式会社WINWIN】請求書送付の件 ${no}`,
     body: [
       input.clientName,
-      `${contact} 様`,
-      "",
-      "※本メールは株式会社WINWINのシステムより送信しております。",
+      ...(contact ? [`${contact} 様`] : []),
       "",
       "平素よりお世話になっております。",
       "下記案件の請求書を添付にてお送りいたしますのでご確認いただきますようお願いいたします。",
@@ -57,14 +55,14 @@ export function fillInvoiceNo(text: string, invoiceNo: string | null): string {
  * 本文: [発注先] / [担当者] 様 / あいさつ / 表題の件 / 空行 / 結び
  */
 export function purchaseOrderMailTemplate(input: {
-  /** 発注先マスタの担当者名。未登録なら「ご担当者」とする。 */
+  /** 発注先マスタの担当者名。未登録（空欄）なら、宛名と敬称の行は出さない。 */
   contactName?: string | null;
   projectName: string;
   vendorName: string;
   /** 発注の工事名（工種）。 */
   workName?: string | null;
 }): MailTemplate {
-  const contact = input.contactName?.trim() || "ご担当者";
+  const contact = input.contactName?.trim() ?? "";
   return {
     subject: [
       "注文書・注文請書送付",
@@ -75,7 +73,7 @@ export function purchaseOrderMailTemplate(input: {
       .join(" "),
     body: [
       input.vendorName,
-      `${contact} 様`,
+      ...(contact ? [`${contact} 様`] : []),
       "",
       "　いつもお世話になっております。",
       "表題の件ですが、注文書・注文請書をお送りいたします。",

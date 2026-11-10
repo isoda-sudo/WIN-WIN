@@ -8,7 +8,7 @@ const ROUND_UNIT = 10;
 const TOP_3 = 3;
 const TOP_5 = 5;
 
-export interface ConcentrationOrderInput {
+interface ConcentrationOrderInput {
   amount: number | null;
   vendor: string | null;
 }
@@ -35,7 +35,7 @@ function round1(v: number): number {
 }
 
 /** 上位 n 社の合計シェア（%）。金額降順の rows を想定。 */
-export function topNShare(
+function topNShare(
   amounts: readonly number[],
   n: number,
   total: number

@@ -10,7 +10,7 @@ export interface ReceiptSummaryRow {
   receivedAmount: number;
 }
 
-export interface MonthlyReceiptSummary {
+interface MonthlyReceiptSummary {
   received: number;
   scheduled: number;
   unpaidCount: number;

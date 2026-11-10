@@ -17,7 +17,7 @@ export const env = createEnv({
     SMTP_PASS: z.string().optional(),
     MAIL_FROM: z.string().optional(),
     // 2FA stays off until this 32-byte hex key is set (encrypts TOTP secrets, peppers recovery codes)
-    // 定期実行（Vercel Cron）の呼び出しを認証する秘密の値。設定すると Authorization: Bearer が必須になる
+    // 定期実行（Vercel Cron）の呼び出しを認証する秘密の値。本番では必ず設定する（未設定だと cron は全拒否）
     CRON_SECRET: z.string().min(16).optional(),
     MFA_ENCRYPTION_KEY: z
       .string()

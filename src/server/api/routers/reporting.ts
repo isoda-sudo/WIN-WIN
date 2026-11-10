@@ -50,14 +50,14 @@ async function loadTargetOrders(period: number) {
   );
 }
 
-export interface CustomerProfitabilityResult {
+interface CustomerProfitabilityResult {
   availablePeriods: number[];
   customers: ProfitCustomerRow[];
   period: number;
   projects: ProfitProjectRow[];
 }
 
-export interface CustomerTrendResult {
+interface CustomerTrendResult {
   currentPeriod: number;
   /** 絞り込みに使える顧客名（案件のある顧客）。 */
   customers: string[];
@@ -66,7 +66,7 @@ export interface CustomerTrendResult {
   points: TrendPoint[];
 }
 
-export interface VendorConcentrationResult extends ConcentrationResult {
+interface VendorConcentrationResult extends ConcentrationResult {
   availablePeriods: number[];
   category: string | null;
   period: number;

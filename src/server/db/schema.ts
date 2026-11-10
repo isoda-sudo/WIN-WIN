@@ -45,6 +45,7 @@ export const users = pgTable(
     status: text("status").default("active"), // active | suspended | deleted (soft-delete)
     tokenVersion: integer("token_version").default(1), // forced-logout: bumped on role/status/password change
     emailSignature: text("email_signature"), // メール送信時に本文末尾へ自動付与する署名（管理者がアカウントごとに登録）
+    ccDefault: boolean("cc_default").notNull().default(false), // 請求書・注文書のメール送信画面で、CCに最初から入れる（管理者がアカウントごとにチェック）
   },
   (t) => [uniqueIndex("users_email_key").on(t.email)]
 );
@@ -187,7 +188,7 @@ export const vendors = pgTable("vendors", {
   // 表示・比較用ラベル。paymentClosingDay/paymentDueDayから自動生成する。
   // 新規の既定は「月末締翌々月5日払い」（D-07/D-13）。drizzleの.default()は
   // マイグレーション生成用のメタ情報でありアプリのinsertには影響しない（vendors.createは
-  // paymentTermLabelで明示的に値を入れる）。共有DB側の列DEFAULT変更は保守担当がADR-0006の
+  // paymentTermLabelで明示的に値を入れる）。共有DB側の列DEFAULT変更は保守担当がADR-0022の
   // 手順で適用する。
   paymentTerm: text("payment_term").default("月末締翌々月5日払い"),
   // 締め日("末")・支払日("5"|"15"|"末"。旧データの"10"|"20"|"25"は表示のみ維持)。両方nullなら未設定
@@ -239,6 +240,7 @@ export const projects = pgTable(
     clientPhone: text("clientPhone"),
     clientEmail: text("clientEmail"),
     clientAddress: text("clientAddress"),
+    siteAddress: text("site_address"), // 案件住所（工事場所）。注文書の「工事場所」へ連動する
     amount: bigint("amount", { mode: "number" }),
     startDate: text("startDate"), // stored as free-text date string, matching current app
     endDate: text("endDate"),
@@ -400,6 +402,8 @@ export const miscPayments = pgTable(
     // 支払元の自社口座（company_accounts.id）。transferFee はこの口座の手数料ルールから
     // サーバーが算出した時点のスナップショット（ルール変更では遡及して書き換えない）
     companyAccountId: integer("company_account_id"),
+    // 月別に金額・期日を手で直した行。定期支払いの定義を編集しても、この行の金額・期日は上書きしない
+    manuallyEdited: boolean("manually_edited").notNull().default(false),
   },
   (t) => [
     check(
@@ -418,6 +422,13 @@ export const miscPayments = pgTable(
       .where(sql`${t.paymentNo} is not null`),
   ]
 );
+
+// 工事外の支払い予定表の月ごとの確定（ロック）。確定した月（期日の月）の支払いは編集できない。
+export const miscPaymentMonthLocks = pgTable("misc_payment_month_locks", {
+  period: text("period").primaryKey(), // "YYYY-MM"
+  lockedAt: timestamp("locked_at", { mode: "date" }).notNull().defaultNow(),
+  lockedBy: integer("locked_by"),
+});
 
 // 案件外支払のカテゴリマスタ（賃料・給与など）。論理削除のみ（過去の支払は名称を文字列で保持）。
 export const paymentCategories = pgTable(
@@ -499,7 +510,8 @@ export const recurringPayments = pgTable(
     categoryName: text("category_name"),
     payee: text("payee"),
     branch: text("branch"),
-    amount: bigint("amount", { mode: "number" }).notNull(),
+    // NULL = 未定（金額が決まっていない定期支払い。集計では0円として扱う）
+    amount: bigint("amount", { mode: "number" }),
     frequency: text("frequency").notNull(), // monthly | yearly
     dueDay: integer("due_day"), // 1-31（月の日数を超える場合は月末）
     dueDayIsMonthEnd: boolean("due_day_is_month_end").notNull().default(false),

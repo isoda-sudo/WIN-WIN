@@ -200,15 +200,13 @@ await v.say(
 );
 
 await v.say(
-  "CSV出力のボタンからは、銀行に取り込む、全銀形式のファイルを、出力できます。未払いの行が、振込の対象です。銀行取込用と、Excelで確認する用の、2種類があります。",
+  "振込用CSV出力のボタンからは、銀行に取り込む、全銀形式のファイルを、出力できます。未払いの行が、振込の対象です。",
   async (p) => {
-    await p.getByRole("button", { name: "CSV出力", exact: true }).click();
     await sleep(1500);
     await v.quiet(1500);
-    const item = p
-      .locator("[data-slot=popover-content] button", { hasText: "銀行取込用" })
-      .first();
-    const d = await dl(p, () => item.click());
+    const d = await dl(p, () =>
+      p.getByRole("button", { name: "振込用CSV出力" }).click()
+    );
     chk(
       "全銀形式（銀行取込用）のCSVがダウンロードされる",
       Boolean(d),

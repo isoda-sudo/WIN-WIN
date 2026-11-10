@@ -30,7 +30,7 @@ export interface MfaDevice {
   sealedSecret: string;
 }
 
-export interface PendingDevice {
+interface PendingDevice {
   /** Started within the last 10 minutes (its QR may be shown again). */
   fresh: boolean;
   id: number;
@@ -38,7 +38,7 @@ export interface PendingDevice {
   sealedSecret: string;
 }
 
-export interface MfaState {
+interface MfaState {
   devices: MfaDevice[];
   enabledAt: Date | null;
   pending: PendingDevice | null;
@@ -131,7 +131,7 @@ export function savePendingDevice(
   });
 }
 
-export type ConfirmDeviceResult =
+type ConfirmDeviceResult =
   | "confirmed"
   | "already_enabled"
   | "device_limit"

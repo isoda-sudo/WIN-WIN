@@ -1,7 +1,14 @@
 "use client";
 
 import { Lock } from "lucide-react";
-import { createContext, useContext, useEffect, useRef, useState } from "react";
+import {
+  createContext,
+  useContext,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
 import { getEditClientId, setEditScope } from "~/lib/edit-scope";
 import { api } from "~/trpc/react";
 
@@ -111,6 +118,13 @@ export function useEditLock(scope: string) {
   const releaseRef = useRef(release.mutate);
   acquireRef.current = acquire.mutateAsync;
   releaseRef.current = release.mutate;
+
+  // 子コンポーネントの useEffect（月の行の作成など）より先に、画面の範囲（scope）を設定する。
+  // サーバーは、この画面専用の更新に、scope のヘッダを必須にしているため
+  useLayoutEffect(() => {
+    setEditScope(scope);
+    return () => setEditScope(null);
+  }, [scope]);
 
   useEffect(() => {
     let stopped = false;

@@ -1,6 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import { type NextRequest, NextResponse } from "next/server";
 import { orderFileContentDisposition } from "~/lib/file-naming";
+import { denyTaxAdvisor } from "~/server/auth/route-guard";
 import { resolveAuthedUser } from "~/server/auth/session";
 import { db } from "~/server/db";
 import { orderFiles } from "~/server/db/schema";
@@ -17,6 +18,12 @@ export async function GET(
   const user = await resolveAuthedUser(req.headers);
   if (!user) {
     return NextResponse.json({ error: "認証が必要です" }, { status: 401 });
+  }
+
+  // 契約書・請書・請求書のPDFは、税理士・社労士には見せない（他の帳票と同じ）
+  const denied = denyTaxAdvisor(user);
+  if (denied) {
+    return denied;
   }
 
   const { id, kind: rawKind } = await params;

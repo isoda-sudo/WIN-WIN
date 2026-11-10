@@ -2,6 +2,7 @@ import PDFDocument from "pdfkit";
 import { calcInvoiceTax } from "~/lib/invoice-tax";
 import type { orders, projects, vendors } from "~/server/db/schema";
 import { COMPANY, toWareki } from "./company";
+import { drawCompanySeal } from "./document";
 import { useJpFont } from "./font";
 
 type OrderRow = typeof orders.$inferSelect;
@@ -25,16 +26,15 @@ function formatVendorBank(vendor: VendorRow | null): string {
 
 interface RenderOrderAckSheetArgs {
   fields: [string, string][];
-  vendorAddr: string;
   vendorName: string;
   wareki: { y: number; m: number; d: number } | null;
 }
 
 /** 注文書／注文請書（添付テンプレートの項目リスト形式） */
-export function renderOrderAckSheet(
+function renderOrderAckSheet(
   doc: PDFKit.PDFDocument,
   mode: OrderAckMode,
-  { vendorName, vendorAddr, fields, wareki }: RenderOrderAckSheetArgs
+  { vendorName, fields, wareki }: RenderOrderAckSheetArgs
 ): void {
   const L = 55;
   const R = 540;
@@ -100,8 +100,9 @@ export function renderOrderAckSheet(
   const sx = L + 30;
   const vx = sx + 70;
   doc.fontSize(10).text(who, L, y);
-  const addr = mode === "order" ? COMPANY.addrOrder : vendorAddr || "";
-  const comp = mode === "order" ? COMPANY.name : vendorName || "";
+  // 注文請書の請負者欄（住所・会社名・代表者名）は、請負者が記入するため空欄にする
+  const addr = mode === "order" ? COMPANY.addrOrder : "";
+  const comp = mode === "order" ? COMPANY.name : "";
   const rep = mode === "order" ? COMPANY.rep : "";
   doc.fontSize(9);
   doc.text("住所", sx, y);
@@ -116,21 +117,48 @@ export function renderOrderAckSheet(
   y += 20;
   doc.text("代表者名", sx, y);
   doc.text(rep, vx, y, { width: 180 });
-  doc
-    .lineWidth(0.8)
-    .strokeColor("#999")
-    .rect(R - 36, y - 6, 32, 32)
-    .stroke();
-  doc
-    .fillColor("#999")
-    .fontSize(8)
-    .text("印", R - 36, y + 4, { width: 32, align: "center" });
+  if (mode === "order") {
+    // 注文書は社印（角印）を押す。注文請書の印欄は、請負者が押すため枠のまま
+    drawCompanySeal(doc, R - 20, y + 10);
+  } else {
+    doc
+      .lineWidth(0.8)
+      .strokeColor("#999")
+      .rect(R - 36, y - 6, 32, 32)
+      .stroke();
+    doc
+      .fillColor("#999")
+      .fontSize(8)
+      .text("印", R - 36, y + 4, { width: 32, align: "center" });
+  }
   doc.fillColor("#000");
 }
 
-export interface OrderAckContent {
+const YEAR_MONTH_RE = /^(\d{4})-(\d{1,2})$/;
+
+/** "YYYY-MM" → "YYYY年M月"。形式が違う・空なら "-"。 */
+export function deliveryMonthLabel(value: string | null | undefined): string {
+  const m = YEAR_MONTH_RE.exec(value ?? "");
+  return m ? `${m[1]}年${Number(m[2])}月` : "-";
+}
+
+/**
+ * 注文書の工事期間。発注明細の着手・完成が空なら、受注一覧で登録した案件の工期
+ * （startDate / endDate）を使う。
+ */
+export function orderPeriodLabel(
+  order: Pick<OrderRow, "periodStart" | "periodEnd">,
+  project: Pick<ProjectRow, "startDate" | "endDate"> | null
+): string {
+  const start = order.periodStart || project?.startDate || "";
+  const end = order.periodEnd || project?.endDate || "";
+  return start || end
+    ? `着手予定　${start || "-"}　～　完成予定　${end || "-"}`
+    : "-";
+}
+
+interface OrderAckContent {
   fields: [string, string][];
-  vendorAddr: string;
   vendorName: string;
 }
 
@@ -143,18 +171,18 @@ export function buildOrderAckContent(
   const net = Number(order.decided ?? order.planned ?? order.estimate) || 0;
   const tax = calcInvoiceTax(net);
   const total = net + tax;
-  const period =
-    order.periodStart || order.periodEnd
-      ? `着手予定　${order.periodStart || "-"}　～　完成予定　${order.periodEnd || "-"}`
-      : "-";
+  const period = orderPeriodLabel(order, project);
   const fields: [string, string][] = [
     ["工事ID", order.orderNo || "-"],
     ["担当者", order.assignee || "-"],
     ["工事名", project ? project.name : order.details || "-"],
     ["工事内容", order.category || order.details || "-"],
-    ["工事場所", order.site || "-"],
+    ["工事場所", project?.siteAddress || order.site || "-"],
     ["工事期間", period],
-    ["検査及び引渡し時期\n　　（施主に対して）", order.handover || "-"],
+    [
+      "検査及び引渡し時期\n　　（施主に対して）",
+      order.handover || deliveryMonthLabel(project?.deliveryMonth),
+    ],
     [
       "請負代金",
       `￥${total.toLocaleString()}（内消費税額　￥${tax.toLocaleString()}　）`,
@@ -164,7 +192,6 @@ export function buildOrderAckContent(
   ];
   return {
     fields,
-    vendorAddr: vendor?.address || "",
     vendorName: vendor?.company || order.vendor || "-",
   };
 }

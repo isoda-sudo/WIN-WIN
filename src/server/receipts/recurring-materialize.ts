@@ -27,7 +27,7 @@ export async function lockRecurringReceiptMonth(
 }
 
 /** 具体化行の共通フィールド（定義から複写する値）。 */
-export function receiptDefinitionFields(
+function receiptDefinitionFields(
   def: RecurringReceiptDefinition,
   dueDate: string
 ) {

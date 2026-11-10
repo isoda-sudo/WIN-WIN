@@ -142,7 +142,7 @@ export function MiscReceiptForm({
   ) => setForm({ ...form, [key]: value });
 
   return (
-    <div className="grid grid-cols-2 gap-4">
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
       <div className="flex flex-col gap-2">
         <Label>区分 *</Label>
         <CategoryField
@@ -160,7 +160,7 @@ export function MiscReceiptForm({
           value={form.name}
         />
       </div>
-      <div className="col-span-2 flex flex-col gap-2">
+      <div className="flex flex-col gap-2 sm:col-span-2">
         <Label>入金元</Label>
         <Input
           onChange={(e) => set("payer", e.target.value)}
@@ -184,7 +184,7 @@ export function MiscReceiptForm({
           value={form.receiptDate}
         />
       </div>
-      <div className="col-span-2">
+      <div className="sm:col-span-2">
         <CompanyAccountSelect
           accounts={accounts}
           allowNone={false}
@@ -194,7 +194,7 @@ export function MiscReceiptForm({
           value={form.companyAccountId}
         />
       </div>
-      <div className="col-span-2 flex flex-col gap-2">
+      <div className="flex flex-col gap-2 sm:col-span-2">
         <Label>入金ステータス</Label>
         <Select onValueChange={(v) => set("status", v)} value={form.status}>
           <SelectTrigger className="w-full">
@@ -209,7 +209,7 @@ export function MiscReceiptForm({
           </SelectContent>
         </Select>
       </div>
-      <div className="col-span-2 flex flex-col gap-2">
+      <div className="flex flex-col gap-2 sm:col-span-2">
         <Label>備考</Label>
         <Input
           onChange={(e) => set("notes", e.target.value)}

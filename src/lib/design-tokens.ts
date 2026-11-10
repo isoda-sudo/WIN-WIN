@@ -9,7 +9,7 @@ export interface ColorTokenDefinition {
   variable: string;
 }
 
-export interface SpacingTokenDefinition {
+interface SpacingTokenDefinition {
   example: string;
   usage: string;
   value: string;

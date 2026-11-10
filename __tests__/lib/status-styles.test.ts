@@ -147,7 +147,7 @@ describe("RECEIPT_STATUS_CLASS matches payment schedule colors", () => {
 });
 
 describe("paymentRowClass", () => {
-  it("支払済みの行だけグレーにする", () => {
+  it("支払済みの行だけグレーにする（未払いは行全体を塗らず、ステータスの黄色だけ）", () => {
     expect(paymentRowClass("支払済み")).toContain("bg-muted");
     expect(paymentRowClass("未払い")).toBe("");
     expect(paymentRowClass(null)).toBe("");

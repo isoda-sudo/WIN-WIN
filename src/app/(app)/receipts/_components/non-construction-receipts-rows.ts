@@ -49,7 +49,7 @@ export function rowStatus(row: NonConstructionReceiptRow): "未入金" | "入金
 }
 
 /** 入金予定日（YYYY-MM-DD。未設定は空文字）。 */
-export function rowDate(row: NonConstructionReceiptRow): string {
+function rowDate(row: NonConstructionReceiptRow): string {
   return (
     (row.kind === "misc" ? row.misc.receiptDate : row.recurring.dueDate) ?? ""
   );

@@ -46,6 +46,7 @@ import {
   insertId,
   ROW_DROP_CLASS,
 } from "~/lib/manual-order";
+import { canEditSettingsMaster } from "~/lib/roles";
 import { useSortedPagedList } from "~/lib/use-sorted-paged-list";
 import { cn } from "~/lib/utils";
 import { api, type RouterOutputs } from "~/trpc/react";
@@ -174,8 +175,8 @@ export default function PaymentCategoriesPage() {
     refetch,
   } = api.paymentCategories.list.useQuery();
   const { data: me } = api.users.me.useQuery();
-  // 編集は管理者のみ（経理は閲覧専用）。ロール確定前は編集不可として扱う
-  const isViewer = me?.role !== "admin";
+  // 編集は管理者・経理。ロール確定前は編集不可として扱う
+  const isViewer = !canEditSettingsMaster(me?.role);
   const [keyword, setKeyword] = useState("");
   const [editing, setEditing] = useState<PaymentCategory | null>(null);
   const [creating, setCreating] = useState(false);
@@ -205,6 +206,7 @@ export default function PaymentCategoriesPage() {
   }, [ordered, keyword]);
 
   const paged = useSortedPagedList({
+    initialShowAll: true,
     options: SORT_OPTIONS,
     resetKey: keyword,
     rows: filtered,
@@ -304,7 +306,7 @@ export default function PaymentCategoriesPage() {
             支払い予定表（工事外の支払い）で使う支払い種別を管理します。行頭のハンドルをドラッグした順に表示されます（例：賃料（本社）、通信料、電気代）
           </p>
         </div>
-        <div className="flex flex-nowrap items-end gap-2">
+        <div className="flex flex-wrap items-end gap-2 md:flex-nowrap">
           <Input
             className="h-8 min-w-32 flex-1"
             onChange={(e) => setKeyword(e.target.value)}
@@ -448,8 +450,8 @@ function PaymentCategoryForm({
     setForm({ ...form, [key]: value });
 
   return (
-    <div className="grid grid-cols-2 gap-4">
-      <div className="col-span-2 flex flex-col gap-2">
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <div className="flex flex-col gap-2 sm:col-span-2">
         <Label>種別名称 *</Label>
         <Input
           onChange={(e) => set("name", e.target.value)}
@@ -457,7 +459,7 @@ function PaymentCategoryForm({
           value={form.name}
         />
       </div>
-      <div className="col-span-2 flex flex-col gap-2">
+      <div className="flex flex-col gap-2 sm:col-span-2">
         <Label>備考</Label>
         <Textarea
           onChange={(e) => set("note", e.target.value)}
