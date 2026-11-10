@@ -28,6 +28,7 @@ export function useStatusChange() {
   const markPlanned = api.recurringPayments.markPlanned.useMutation();
   const skip = api.recurringPayments.skipMonth.useMutation();
   const unskip = api.recurringPayments.unskipMonth.useMutation();
+  const updateMonth = api.recurringPayments.updateMonth.useMutation();
 
   const fail = (err: unknown) =>
     toast.error(
@@ -94,5 +95,45 @@ export function useStatusChange() {
     }
   };
 
-  return { changeMisc, changeMiscNotes, changeRecurring };
+  /** 単発の支払いの金額・期日を、一覧上で直す。 */
+  const changeMiscField = async (
+    m: MiscPayment,
+    patch: { amount?: number; paymentDate?: string }
+  ) => {
+    try {
+      await misc.mutateAsync({ id: m.id, ...patch });
+      toast.success("更新しました");
+    } catch (err) {
+      fail(err);
+    } finally {
+      await refresh();
+    }
+  };
+
+  /** 定期支払いの、その月だけの金額（null=未定）・期日を、一覧上で直す。 */
+  const changeRecurringMonth = async (
+    r: RecurringMonthRow,
+    patch: { amount?: number | null; paymentDate?: string }
+  ) => {
+    try {
+      await updateMonth.mutateAsync({
+        recurringId: r.recurringId,
+        period: r.period,
+        ...patch,
+      });
+      toast.success("この月の分を更新しました");
+    } catch (err) {
+      fail(err);
+    } finally {
+      await refresh();
+    }
+  };
+
+  return {
+    changeMisc,
+    changeMiscField,
+    changeMiscNotes,
+    changeRecurring,
+    changeRecurringMonth,
+  };
 }

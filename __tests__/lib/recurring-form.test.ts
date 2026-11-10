@@ -35,4 +35,17 @@ describe("recurring-form", () => {
       monthOfYear: 6,
     });
   });
+
+  it("金額が空でも、「未定」にチェックすれば登録できる（金額は null になる）", () => {
+    const f = { ...base, amount: "", frequency: "monthly" as const };
+    expect(validateRecurringForm(f)).toContain("未定");
+    const undecided = { ...f, amountUndecided: true };
+    expect(validateRecurringForm(undecided)).toBeNull();
+    expect(toRecurringInput(undecided).amount).toBeNull();
+  });
+
+  it("「未定」でなければ、金額は数値として入力に反映される", () => {
+    const f = { ...base, frequency: "monthly" as const };
+    expect(toRecurringInput(f).amount).toBe(50_000);
+  });
 });

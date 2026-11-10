@@ -1,7 +1,6 @@
 /** 銀行名プルダウンの選択肢（発注先マスタ・自社口座マスタ共通）。同一銀行宛の判定は名称比較のため、表記をここで統一する。 */
 /** 銀行マスタの区分（プルダウン内の並び順）。 */
 export const BANK_GROUP_NAMES = ["主要銀行", "地方銀行", "ネット銀行"] as const;
-export type BankGroupName = (typeof BANK_GROUP_NAMES)[number];
 
 /** 区分見出しの配色（プルダウン内で区分を見分けやすくする）。 */
 export const BANK_GROUP_TONE: Record<string, string> = {

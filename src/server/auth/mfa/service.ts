@@ -35,7 +35,7 @@ import {
   verifyTotp,
 } from "./totp";
 
-export interface MfaUser {
+interface MfaUser {
   email: string;
   id: number;
   role: string;
@@ -61,10 +61,10 @@ export interface MfaFailure {
   remainingAttempts?: number;
 }
 
-export type SecondFactorMethod = "totp" | "recovery";
+type SecondFactorMethod = "totp" | "recovery";
 
 /** Shown as the account's title in the authenticator app. */
-export const MFA_ISSUER = COMPANY.name;
+const MFA_ISSUER = COMPANY.name;
 
 const KEY_GROUP = /.{1,4}/g;
 const MAX_DEVICE_NAME_LENGTH = 30;
@@ -95,7 +95,7 @@ function requiredRoles(): string[] {
   return parseRequiredRoles(env.MFA_REQUIRED_ROLES);
 }
 
-export function isMfaRequiredFor(role: string): boolean {
+function isMfaRequiredFor(role: string): boolean {
   return isMfaConfigured() && requiredRoles().includes(role);
 }
 

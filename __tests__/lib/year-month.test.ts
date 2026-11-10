@@ -1,14 +1,12 @@
 import { describe, expect, it } from "vitest";
 import {
-  buildYearMonth,
   isDateInYearMonth,
   parseYearMonth,
   yearOptions,
 } from "~/lib/year-month";
 
 describe("year-month helpers", () => {
-  it("buildYearMonth/parseYearMonth", () => {
-    expect(buildYearMonth(2026, 3)).toBe("2026-03");
+  it("parseYearMonth", () => {
     expect(parseYearMonth("2026-10")).toEqual({ year: 2026, month: 10 });
     expect(parseYearMonth("bad")).toBeNull();
   });

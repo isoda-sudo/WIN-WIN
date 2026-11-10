@@ -4,7 +4,7 @@ import { useRouter } from "next/navigation";
 import { useEffect } from "react";
 
 /** 無操作がこの時間（1時間）続いたら自動でログアウトする。 */
-export const IDLE_LIMIT_MS = 60 * 60 * 1000;
+const IDLE_LIMIT_MS = 60 * 60 * 1000;
 const CHECK_INTERVAL_MS = 30_000;
 const WRITE_THROTTLE_MS = 5000;
 const STORAGE_KEY = "last_activity_at";

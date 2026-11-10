@@ -22,7 +22,11 @@ export const metadata: Metadata = {
   formatDetection: { telephone: false },
 };
 
-export const viewport: Viewport = { themeColor: "#7c3aed" };
+export const viewport: Viewport = {
+  themeColor: "#7c3aed",
+  // iPhone のノッチ・ホームバーの領域まで描画し、余白は env(safe-area-inset-*) で取る
+  viewportFit: "cover",
+};
 
 const notoSansJP = Noto_Sans_JP({
   subsets: ["latin"],

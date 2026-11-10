@@ -19,7 +19,7 @@ export function crossesFiscalYear(
   return before !== after;
 }
 
-export interface CopyableOrder {
+interface CopyableOrder {
   assignee: string | null;
   category: string | null;
   decided: number | null;

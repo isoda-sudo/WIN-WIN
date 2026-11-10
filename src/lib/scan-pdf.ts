@@ -7,7 +7,7 @@ export const PAGE_MARGIN_PT = 18;
 
 export const PDF_MAX_BYTES = 3 * 1024 * 1024;
 
-export interface CompressStep {
+interface CompressStep {
   maxEdge: number;
   quality: number;
 }
@@ -22,7 +22,7 @@ export const COMPRESS_STEPS: readonly CompressStep[] = [
   { maxEdge: 1200, quality: 0.4 },
 ];
 
-export interface Size {
+interface Size {
   height: number;
   width: number;
 }
@@ -43,7 +43,7 @@ export function scaleToMaxEdge(size: Size, maxEdge: number): Size {
   };
 }
 
-export interface PageLayout {
+interface PageLayout {
   height: number;
   width: number;
   x: number;

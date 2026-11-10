@@ -9,7 +9,7 @@ import sharp from "sharp";
 
 /** 再圧縮後の画像の長辺（px）。A4で約100dpi。5年以上前の書類は読めれば足りる。 */
 export const RECOMPRESS_MAX_EDGE = 1200;
-export const RECOMPRESS_QUALITY = 40;
+const RECOMPRESS_QUALITY = 40;
 
 function isJpegImage(dict: PDFDict): boolean {
   if (dict.get(PDFName.of("Subtype")) !== PDFName.of("Image")) {

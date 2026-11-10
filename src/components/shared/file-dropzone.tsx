@@ -5,10 +5,10 @@ import { toast } from "sonner";
 import { cn } from "~/lib/utils";
 
 /** Vercel のリクエストボディ上限（4.5MB）に収めるための PDF 上限。 */
-export const MAX_PDF_BYTES = 3 * 1024 * 1024;
+const MAX_PDF_BYTES = 3 * 1024 * 1024;
 
 /** PDF かつ 3MB 以下か検証する。問題があれば日本語メッセージ、なければ null。 */
-export function validatePdfFile(file: File): string | null {
+function validatePdfFile(file: File): string | null {
   if (file.type !== "application/pdf") {
     return "PDFファイルを指定してください";
   }

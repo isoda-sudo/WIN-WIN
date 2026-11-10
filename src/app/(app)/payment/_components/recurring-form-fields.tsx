@@ -142,8 +142,8 @@ export function RecurringFormFields({
       ? [...categoryNames, form.categoryName]
       : categoryNames;
   return (
-    <div className="grid grid-cols-2 gap-4">
-      <div className="col-span-2 flex flex-col gap-2">
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <div className="flex flex-col gap-2 sm:col-span-2">
         <Label htmlFor="rec-name">名称 *</Label>
         <Input
           id="rec-name"
@@ -172,12 +172,31 @@ export function RecurringFormFields({
       <div className="flex flex-col gap-2">
         <Label htmlFor="rec-amount">金額 *</Label>
         <Input
+          disabled={form.amountUndecided}
           id="rec-amount"
           min={0}
           onChange={(e) => set("amount", e.target.value)}
+          placeholder={form.amountUndecided ? "未定" : undefined}
           type="number"
-          value={form.amount}
+          value={form.amountUndecided ? "" : form.amount}
         />
+        <label
+          className="flex items-center gap-2 text-sm"
+          htmlFor="rec-amount-undecided"
+        >
+          <Checkbox
+            checked={form.amountUndecided}
+            id="rec-amount-undecided"
+            onCheckedChange={(c) =>
+              onChange({
+                ...form,
+                amount: c === true ? "" : form.amount,
+                amountUndecided: c === true,
+              })
+            }
+          />
+          未定（金額が決まったら一覧で入力。集計では0円）
+        </label>
       </div>
       <div className="flex flex-col gap-2">
         <Label htmlFor="rec-payee">支払先</Label>
@@ -209,7 +228,7 @@ export function RecurringFormFields({
           ))}
         </datalist>
       </div>
-      <div className="col-span-2">
+      <div className="sm:col-span-2">
         <CompanyAccountSelect
           accounts={accounts}
           allowNone={false}
@@ -220,7 +239,7 @@ export function RecurringFormFields({
       </div>
       {transferFee !== undefined && <ReadOnlyTransferFee fee={transferFee} />}
       <ScheduleFields form={form} onChange={onChange} />
-      <div className="col-span-2 flex flex-col gap-2">
+      <div className="flex flex-col gap-2 sm:col-span-2">
         <Label htmlFor="rec-notes">備考</Label>
         <Input
           id="rec-notes"

@@ -707,11 +707,6 @@ function OrderDeleteDialog({
   );
 }
 
-/** 「行を追加」の行が表示されているか（表示中は「次の20件」ボタンをその行に置く）。 */
-function isAddRowVisible(creating: boolean, readOnly: boolean): boolean {
-  return !(creating || readOnly);
-}
-
 /** 工種フィルタの選択肢。マスタがあればその名前、なければ発注明細の工種名（重複除去）。 */
 function categoryFilterNames(
   categories: { name: string }[] | undefined,
@@ -1010,7 +1005,7 @@ function OrderDetailView({ projectId }: { projectId: number }) {
     }
     updateMutation.mutate({
       id: editing.id,
-      version: editing.version,
+      version: editing.version ?? 1,
       category: form.category,
       vendor: form.vendor,
       estimate: numOrNull(form.estimate),
@@ -1059,15 +1054,17 @@ function OrderDetailView({ projectId }: { projectId: number }) {
             </div>
           </div>
           <div className="flex flex-col items-end gap-2">
-            <Button
-              onClick={() => {
-                window.location.href = `/api/export/plan?projectId=${projectId}`;
-              }}
-              size="sm"
-              variant="outline"
-            >
-              CSV出力
-            </Button>
+            {!isTaxAdvisorRole && (
+              <Button
+                onClick={() => {
+                  window.location.href = `/api/export/plan?projectId=${projectId}`;
+                }}
+                size="sm"
+                variant="outline"
+              >
+                CSV出力
+              </Button>
+            )}
             {isAdmin && (
               <Tooltip>
                 <TooltipTrigger asChild>
@@ -1108,7 +1105,7 @@ function OrderDetailView({ projectId }: { projectId: number }) {
           </div>
         </div>
 
-        <div className="grid grid-cols-4 gap-4">
+        <div className="grid grid-cols-2 gap-3 md:grid-cols-4 md:gap-4">
           <RevenueCard
             decidedValue={summary.revenue}
             onSaveDecided={(value) =>
@@ -1147,7 +1144,7 @@ function OrderDetailView({ projectId }: { projectId: number }) {
           />
         </div>
 
-        <div className="flex flex-nowrap items-end gap-2">
+        <div className="flex flex-wrap items-end gap-2 md:flex-nowrap">
           <Select onValueChange={setCategoryFilter} value={categoryFilter}>
             <SelectTrigger className="w-32 shrink-0" size="sm">
               <SelectValue />
@@ -1250,6 +1247,34 @@ function OrderDetailView({ projectId }: { projectId: number }) {
                   onRetry={() => refetch()}
                 />
               )}
+              {creating && !readOnly ? (
+                <OrderCreateRow
+                  categories={categories}
+                  columns={columns.state}
+                  deliveryMonth={project?.deliveryMonth}
+                  form={form}
+                  onCancel={() => setCreating(false)}
+                  onSave={submitCreate}
+                  savePending={createMutation.isPending}
+                  setForm={setForm}
+                  vendorOptions={vendorOptions}
+                />
+              ) : (
+                !readOnly && (
+                  <TableRow>
+                    <TableCell colSpan={visibleColumnCount}>
+                      <button
+                        className="flex items-center gap-1 py-1 text-muted-foreground text-sm hover:text-foreground"
+                        onClick={openCreate}
+                        type="button"
+                      >
+                        <Plus className="size-4" />
+                        行を追加
+                      </button>
+                    </TableCell>
+                  </TableRow>
+                )
+              )}
               {paged.rows.map((o) =>
                 editing && editing.id === o.id ? (
                   <OrderEditRow
@@ -1274,14 +1299,14 @@ function OrderDetailView({ projectId }: { projectId: number }) {
                     onFieldSave={(field, value) =>
                       updateFieldMutation.mutate({
                         id: o.id,
-                        version: o.version,
+                        version: o.version ?? 1,
                         [field]: value,
                       })
                     }
                     onNotesSave={(details) =>
                       updateFieldMutation.mutate({
                         id: o.id,
-                        version: o.version,
+                        version: o.version ?? 1,
                         details,
                       })
                     }
@@ -1290,7 +1315,7 @@ function OrderDetailView({ projectId }: { projectId: number }) {
                     onStatusChange={(status) =>
                       updateStatusMutation.mutate({
                         id: o.id,
-                        version: o.version,
+                        version: o.version ?? 1,
                         status,
                       })
                     }
@@ -1299,54 +1324,16 @@ function OrderDetailView({ projectId }: { projectId: number }) {
                   />
                 )
               )}
-              {creating && !readOnly ? (
-                <OrderCreateRow
-                  categories={categories}
-                  columns={columns.state}
-                  deliveryMonth={project?.deliveryMonth}
-                  form={form}
-                  onCancel={() => setCreating(false)}
-                  onSave={submitCreate}
-                  savePending={createMutation.isPending}
-                  setForm={setForm}
-                  vendorOptions={vendorOptions}
-                />
-              ) : (
-                !readOnly && (
-                  <TableRow>
-                    <TableCell colSpan={visibleColumnCount}>
-                      <div className="flex items-center justify-between gap-3">
-                        <button
-                          className="flex items-center gap-1 py-1 text-muted-foreground text-sm hover:text-foreground"
-                          onClick={openCreate}
-                          type="button"
-                        >
-                          <Plus className="size-4" />
-                          行を追加
-                        </button>
-                        <LoadMore
-                          hasMore={paged.hasMore}
-                          onMore={paged.loadMore}
-                          shown={paged.shown}
-                          total={paged.total}
-                        />
-                      </div>
-                    </TableCell>
-                  </TableRow>
-                )
-              )}
             </TableBody>
           </Table>
         </ScrollableTableSection>
-        {!isAddRowVisible(creating, readOnly) && (
-          <LoadMore
-            className="px-1 py-1"
-            hasMore={paged.hasMore}
-            onMore={paged.loadMore}
-            shown={paged.shown}
-            total={paged.total}
-          />
-        )}
+        <LoadMore
+          className="px-1 py-1"
+          hasMore={paged.hasMore}
+          onMore={paged.loadMore}
+          shown={paged.shown}
+          total={paged.total}
+        />
 
         {poOrder && (
           <PurchaseOrderModal
@@ -2773,8 +2760,10 @@ function PoPreviewPane({
   orderNo: string | null;
 }) {
   const [loaded, setLoaded] = useState(false);
+  // プレビューを開くたびに別のURLにする（受注一覧で工期などを直したあと、ブラウザが古いPDFを使い回さないように）
+  const openedAt = useRef(Date.now()).current;
   // サムネイル一覧を閉じ、幅に合わせて表示する（既定だと左のサムネイルに幅を取られ、ページが小さく見える）
-  const src = `/api/po/${orderId}?inline=1&v=${orderNo || "pending"}#navpanes=0&pagemode=none&view=FitH`;
+  const src = `/api/po/${orderId}?inline=1&v=${orderNo || "pending"}-${openedAt}#navpanes=0&pagemode=none&view=FitH`;
 
   return (
     <div className="relative h-[80vh] min-h-[480px] overflow-hidden rounded-md border bg-muted/30">
@@ -2896,7 +2885,7 @@ function PurchaseOrderModal({
         toast.error(data.error ?? "送信に失敗しました");
         return;
       }
-      toast.success("発注確定メールを送信しました");
+      toast.success("注文書メールを送信しました");
       setShowEmailForm(false);
       await utils.orders.list.invalidate();
     } catch {

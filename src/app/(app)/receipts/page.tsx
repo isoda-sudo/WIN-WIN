@@ -339,7 +339,7 @@ function MonthlySalesSummary({
   return (
     <div className="flex flex-col gap-3">
       <MonthNav onChange={onMonthChange} yearMonth={yearMonth} />
-      <div className="grid grid-cols-3 gap-4">
+      <div className="grid grid-cols-3 gap-2 sm:gap-4">
         <SummaryCard title="当月入金予定額" value={yen(summary.scheduled)} />
         <SummaryCard title="当月入金実績額" value={yen(summary.received)} />
         <SummaryCard
@@ -813,8 +813,8 @@ function ProjectReceiptsTab() {
         yearMonth={summaryMonth}
       />
 
-      <div className="flex flex-nowrap items-end justify-between gap-2">
-        <div className="flex min-w-0 flex-1 flex-nowrap items-end gap-2">
+      <div className="flex flex-wrap items-end justify-between gap-2 md:flex-nowrap">
+        <div className="flex w-full min-w-0 flex-1 flex-wrap items-end gap-2 md:w-auto md:flex-nowrap">
           <div className="flex min-w-0 shrink flex-col gap-1">
             <Label className="text-muted-foreground text-xs">
               入金ステータス
@@ -855,7 +855,7 @@ function ProjectReceiptsTab() {
               value={dueTo}
             />
           </div>
-          <div className="flex min-w-0 flex-1 flex-col gap-1">
+          <div className="flex min-w-40 flex-1 flex-col gap-1 md:min-w-0">
             <Label className="text-muted-foreground text-xs">検索</Label>
             <Input
               className="h-8 w-full min-w-0 px-2 text-xs"
@@ -865,7 +865,7 @@ function ProjectReceiptsTab() {
             />
           </div>
         </div>
-        <div className="flex shrink-0 flex-nowrap items-end gap-2">
+        <div className="flex w-full shrink-0 flex-wrap items-end gap-2 md:w-auto md:flex-nowrap">
           <Button
             className="shrink-0"
             onClick={exportCsv}

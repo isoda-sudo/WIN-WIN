@@ -7,7 +7,7 @@ import { useEditLocked } from "~/lib/use-edit-lock";
 import { cn } from "~/lib/utils";
 
 /** 一覧テーブルで「全画面表示」に切り替える件数のしきい値。 */
-export const TABLE_SCROLL_THRESHOLD = 20;
+const TABLE_SCROLL_THRESHOLD = 20;
 
 /**
  * トラックパッドの斜め方向スワイプで縦横が同時に動く「斜めスクロール」を

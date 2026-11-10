@@ -5,7 +5,7 @@ import { appendNoReplyNote } from "~/lib/mail-note";
 const DEFAULT_SMTP_PORT = 587;
 
 /** SMTP の接続情報（ユーザー名・パスワード）が設定済みか。未設定だと送信できない。 */
-export function isMailConfigured(): boolean {
+function isMailConfigured(): boolean {
   return Boolean(env.SMTP_USER && env.SMTP_PASS);
 }
 

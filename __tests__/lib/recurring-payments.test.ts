@@ -10,6 +10,7 @@ import {
   monthsOfYear,
   nextMiscSeq,
   paymentYearMonth,
+  previousMonthOf,
   previousYearPeriod,
   type RecurringSchedule,
   skipKey,
@@ -66,8 +67,9 @@ describe("dueDateForMonth", () => {
   });
 
   it("clamps day 29/30/31 to the last day of February", () => {
+    // 2027-02-28 は日曜のため、翌営業日（3/1）へ繰り越す
     expect(dueDateForMonth(monthly({ dueDay: 29 }), "2027-02")).toBe(
-      "2027-02-28"
+      "2027-03-01"
     );
     expect(dueDateForMonth(monthly({ dueDay: 29 }), "2028-02")).toBe(
       "2028-02-29"
@@ -76,13 +78,14 @@ describe("dueDateForMonth", () => {
       "2028-02-29"
     );
     expect(dueDateForMonth(monthly({ dueDay: 31 }), "2027-02")).toBe(
-      "2027-02-28"
+      "2027-03-01"
     );
     expect(dueDateForMonth(monthly({ dueDay: 31 }), "2026-04")).toBe(
       "2026-04-30"
     );
+    // 2026-05-31 は日曜のため、翌営業日（6/1）へ繰り越す
     expect(dueDateForMonth(monthly({ dueDay: 31 }), "2026-05")).toBe(
-      "2026-05-31"
+      "2026-06-01"
     );
   });
 
@@ -108,7 +111,34 @@ describe("dueDateForMonth", () => {
         monthly({ frequency: "yearly", monthOfYear: 12, dueDay: 31 }),
         "2026-12"
       )
-    ).toBe("2026-12-31");
+    ).toBe("2027-01-04");
+  });
+
+  it("土日・祝日・年末年始の期日は翌営業日へ繰り越し、月をまたぐことがある", () => {
+    const monthEnd = monthly({ dueDayIsMonthEnd: true });
+    // 平日の月末はそのまま
+    expect(dueDateForMonth(monthEnd, "2026-04")).toBe("2026-04-30");
+    expect(dueDateForMonth(monthEnd, "2026-11")).toBe("2026-11-30");
+    // 土曜の月末（2026-10-31）→ 翌月の月曜（11/2）
+    expect(dueDateForMonth(monthEnd, "2026-10")).toBe("2026-11-02");
+    // 日曜の月末（2026-05-31）→ 翌月の月曜（6/1）
+    expect(dueDateForMonth(monthEnd, "2026-05")).toBe("2026-06-01");
+    // 年末（12/31）→ 年始の休みを越えた最初の営業日
+    expect(dueDateForMonth(monthEnd, "2026-12")).toBe("2027-01-04");
+    // 月の途中でも休日なら翌営業日（2026-11-03 は文化の日、火曜 → 11/4）
+    expect(dueDateForMonth(monthly({ dueDay: 3 }), "2026-11")).toBe(
+      "2026-11-04"
+    );
+  });
+});
+
+describe("previousMonthOf", () => {
+  it("1つ前の月を返す（年をまたぐ）", () => {
+    expect(previousMonthOf("2026-11")).toBe("2026-10");
+    expect(previousMonthOf("2026-01")).toBe("2025-12");
+  });
+  it("不正な形式は null", () => {
+    expect(previousMonthOf("2026-13")).toBeNull();
   });
 });
 

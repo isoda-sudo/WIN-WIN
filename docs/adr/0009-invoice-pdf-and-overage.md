@@ -66,5 +66,5 @@
 
 ## 参照
 
-- ADR-0006: 請求書PDFの保存と連絡先スキーマ
+- ADR-0022: 請求書PDFの保存と連絡先スキーマ
 - docs/poc-reference/business-rules.md

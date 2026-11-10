@@ -17,7 +17,7 @@ export interface BasePageComponentProps {
 /**
  * Base props for grid layout components
  */
-export interface BaseGridProps {
+interface BaseGridProps {
   children: React.ReactNode;
   className?: string;
   gap?: "sm" | "md" | "lg";

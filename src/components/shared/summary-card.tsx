@@ -15,12 +15,12 @@ export function SummaryCard({
 }) {
   return (
     <Card>
-      <CardHeader className="pb-2">
+      <CardHeader className="px-3 pb-1 sm:px-6 sm:pb-2">
         <CardTitle className="text-muted-foreground text-xs uppercase tracking-wide">
           {title}
         </CardTitle>
       </CardHeader>
-      <CardContent className="font-semibold text-2xl tabular-nums">
+      <CardContent className="px-3 font-semibold text-base tabular-nums sm:px-6 sm:text-2xl">
         {value}
       </CardContent>
     </Card>

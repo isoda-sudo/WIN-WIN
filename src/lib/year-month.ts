@@ -14,18 +14,8 @@ export function shiftYearMonth(ym: string, delta: number): string {
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}`;
 }
 
-export function formatYearMonthLabel(ym: string): string {
-  const [y, m] = ym.split("-");
-  return `${y}年${Number(m)}月`;
-}
-
 const YEAR_RANGE_AROUND = 5;
 const YEAR_MONTH_RE = /^(\d{4})-(\d{2})/;
-
-/** 年・月から "YYYY-MM" を組み立てる。 */
-export function buildYearMonth(year: number, month: number): string {
-  return `${year}-${String(month).padStart(2, "0")}`;
-}
 
 /** "YYYY-MM" を年・月に分解する。不正な値は null。 */
 export function parseYearMonth(

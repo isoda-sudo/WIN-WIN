@@ -21,6 +21,7 @@ import {
   TableRow,
 } from "~/components/ui/table";
 import { blockHeaderClass, type CategoryBlock } from "~/lib/category-blocks";
+import { monthOf } from "~/lib/month-lock";
 import {
   normalizePaymentStatus,
   PAYMENT_STATUS_CLASS,
@@ -29,6 +30,7 @@ import {
   statusClass,
 } from "~/lib/status-styles";
 import { cn, truncateChars } from "~/lib/utils";
+import { InlineAmountCell, InlineDateCell } from "./inline-cells";
 import type {
   MiscPayment,
   NonConstructionRow,
@@ -43,7 +45,7 @@ import {
 import { money, PAYMENT_STATUS_OPTIONS, QueryErrorRow } from "./payment-common";
 
 /** 振込手数料列を含めた全列数。手数料列を隠すときは 1 引く。 */
-export const NON_CONSTRUCTION_COLS = 10;
+const NON_CONSTRUCTION_COLS = 9;
 
 function colCount(showFee: boolean | undefined): number {
   return showFee ? NON_CONSTRUCTION_COLS : NON_CONSTRUCTION_COLS - 1;
@@ -51,9 +53,19 @@ function colCount(showFee: boolean | undefined): number {
 const NOTES_TRUNCATE_LENGTH = 15;
 const SKELETON_ROWS = 5;
 export interface RowHandlers {
+  /** 確定（ロック）済みの月（YYYY-MM）。その月に期日がある行は、一覧上で直せない。 */
+  lockedMonths?: ReadonlySet<string>;
   onEdit: (m: MiscPayment) => void;
+  onMiscFieldChange: (
+    m: MiscPayment,
+    patch: { amount?: number; paymentDate?: string }
+  ) => void;
   onMiscNotesChange: (m: MiscPayment, notes: string) => void;
   onMiscStatusChange: (m: MiscPayment, status: string) => void;
+  onRecurringMonthChange: (
+    r: RecurringMonthRow,
+    patch: { amount?: number | null; paymentDate?: string }
+  ) => void;
   onRecurringStatusChange: (
     r: RecurringMonthRow,
     status: RecurringStatusValue
@@ -62,6 +74,19 @@ export interface RowHandlers {
   readOnly?: boolean;
   /** 振込手数料の列を表示するか（表示項目で切り替え。初期は非表示）。 */
   showFee?: boolean;
+}
+
+/** 一覧上で金額・期日を直せる行か。閲覧専用・支払済み・確定（ロック）済みの月は直せない。 */
+function canEditInline(
+  handlers: RowHandlers,
+  status: string | null | undefined,
+  date: string | null | undefined
+): boolean {
+  if (handlers.readOnly || normalizePaymentStatus(status) === "支払済み") {
+    return false;
+  }
+  const ym = monthOf(date);
+  return !(ym && handlers.lockedMonths?.has(ym));
 }
 
 function feeText(n: number | null | undefined): string {
@@ -126,10 +151,21 @@ function MiscRow({ handlers, m }: { handlers: RowHandlers; m: MiscPayment }) {
         {m.payee || "-"}
       </TableCell>
       <TableCell className="text-right tabular-nums">
-        {money(m.amount)}
+        <InlineAmountCell
+          disabled={!canEditInline(handlers, m.status, m.paymentDate)}
+          onCommit={(v) =>
+            v !== null && handlers.onMiscFieldChange(m, { amount: v })
+          }
+          value={m.amount ?? 0}
+        />
       </TableCell>
-      <TableCell className="text-right tabular-nums">-</TableCell>
-      <TableCell className="tabular-nums">{m.paymentDate || "-"}</TableCell>
+      <TableCell className="tabular-nums">
+        <InlineDateCell
+          disabled={!canEditInline(handlers, m.status, m.paymentDate)}
+          onCommit={(v) => handlers.onMiscFieldChange(m, { paymentDate: v })}
+          value={m.paymentDate || ""}
+        />
+      </TableCell>
       {handlers.showFee && (
         <TableCell className="text-right tabular-nums">
           {feeText(m.transferFee)}
@@ -238,12 +274,22 @@ function RecurringRow({
         </div>
       </TableCell>
       <TableCell className="text-right tabular-nums">
-        {money(r.amount)}
+        <InlineAmountCell
+          allowUndecided
+          disabled={r.skipped || !canEditInline(handlers, r.status, r.dueDate)}
+          onCommit={(v) => handlers.onRecurringMonthChange(r, { amount: v })}
+          value={r.amount}
+        />
       </TableCell>
-      <TableCell className="text-right tabular-nums">
-        {r.previousYearAmount == null ? "-" : money(r.previousYearAmount)}
+      <TableCell className="tabular-nums">
+        <InlineDateCell
+          disabled={r.skipped || !canEditInline(handlers, r.status, r.dueDate)}
+          onCommit={(v) =>
+            handlers.onRecurringMonthChange(r, { paymentDate: v })
+          }
+          value={r.dueDate}
+        />
       </TableCell>
-      <TableCell className="tabular-nums">{r.dueDate}</TableCell>
       {handlers.showFee && (
         <TableCell className="text-right tabular-nums">
           {feeText(r.transferFee)}
@@ -266,7 +312,6 @@ function TableHeaderRow({ showFee }: { showFee?: boolean }) {
         <TableHead>区分</TableHead>
         <TableHead>名称/支払先</TableHead>
         <TableHead className="text-right">金額</TableHead>
-        <TableHead className="text-right">前年同月</TableHead>
         <TableHead>支払期日</TableHead>
         {showFee && <TableHead className="text-right">振込手数料</TableHead>}
         <TableHead>支払方法</TableHead>

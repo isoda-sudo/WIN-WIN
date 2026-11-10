@@ -14,7 +14,7 @@ import {
   DialogTitle,
 } from "~/components/ui/dialog";
 
-export interface UploadedPdf {
+interface UploadedPdf {
   dataUrl: string;
   filename: string;
 }

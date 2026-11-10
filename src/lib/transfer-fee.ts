@@ -22,7 +22,7 @@ export interface TransferFeeRule {
 }
 
 /** ルールの帯が金額 amount を含むか（from 以上・to 未満）。 */
-export function ruleContains(
+function ruleContains(
   rule: Pick<TransferFeeRule, "amountFrom" | "amountTo">,
   amount: number
 ): boolean {

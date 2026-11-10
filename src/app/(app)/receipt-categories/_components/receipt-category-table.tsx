@@ -119,7 +119,11 @@ export function ReceiptCategoryTable({
   onReorder,
   onRetry,
 }: Props) {
-  const paged = useSortedPagedList({ options: KEEP_ORDER, rows: categories });
+  const paged = useSortedPagedList({
+    initialShowAll: true,
+    options: KEEP_ORDER,
+    rows: categories,
+  });
   return (
     <>
       <ScrollableTableSection count={categories.length}>

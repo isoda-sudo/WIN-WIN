@@ -90,7 +90,6 @@ cp docs/adr/template.md "docs/adr/${next}-your-decision-title.md"
 | [0004](./0004-mirror-agent-skills-via-symlinks.md) | エージェント用Skillをsymlinkでミラーする | 承認(Accepted) | 2026-07-03 |
 | [0005](./0005-track-only-external-skills-in-lock.md) | skills-lock.jsonは外部由来Skillのみを管理対象とする | 承認(Accepted) | 2026-07-03 |
 | [0006](./0006-keep-ci-review-skill-under-claude-dir.md) | CIレビュー用Skillの実体を .claude/skills/ に置く（ADR-0004 の例外） | 承認(Accepted) | 2026-09-14 |
-| [0006](./0006-store-invoice-pdf-and-contact-schema.md) | 請求書PDFの保存と、連絡先・支払条件・確定ロック等のスキーマ追加 | 提案中(Proposed) | 2026-10-06 |
 | [0007](./0007-payment-schedule-recurring-and-categories.md) | 支払管理の定期支払い・カテゴリマスタ・支払No、および残金の廃止 | 提案中(Proposed) | 2026-10-08 |
 | [0008](./0008-projects-list-and-period-carryover.md) | 受注一覧の固定表示・金額の自動反映・期跨ぎのコピー | 提案中(Proposed) | 2026-10-13 |
 | [0009](./0009-invoice-pdf-and-overage.md) | 請求書PDFの整理（電子印のみ・ファイル名）と金額超過の制御 | 提案中(Proposed) | 2026-10-13 |
@@ -106,6 +105,9 @@ cp docs/adr/template.md "docs/adr/${next}-your-decision-title.md"
 | [0019](./0019-order-transfer-fee-fixed-and-totals.md) | 発注の振込手数料をレコード生成時に固定し、金額の集計と粗利に含める | 提案中(Proposed) | 2026-10-27 |
 | [0020](./0020-bank-branch-data-and-refresh.md) | 銀行の支店データ（自動連携と手動追加の分離、最新化ボタン） | 提案中(Proposed) | 2026-10-27 |
 | [0021](./0021-archive-old-project-files.md) | 5年を過ぎた案件の書類を、画像を再圧縮したZIPで保管する（月次バッチ） | 提案中(Proposed) | 2026-10-28 |
+| [0022](./0022-store-invoice-pdf-and-contact-schema.md) | 請求書PDFの保存と、連絡先・支払条件・確定ロック等のスキーマ追加 | 提案中(Proposed) | 2026-10-06 |
+| [0023](./0023-meeting-fixes-nov-2026.md) | 打ち合わせ指摘の反映（請求書番号の表示・CC管理・案件住所・マスタ権限・工事外の支払い） | 提案中(Proposed) | 2026-11-09 |
+| [0024](./0024-security-audit-high-fixes.md) | セキュリティ監査（High）の対応 | 提案中(Proposed) | 2026-11-10 |
 
 ## manage-adr スキルについて
 

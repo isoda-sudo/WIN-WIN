@@ -4,7 +4,7 @@
  */
 export const MAX_INVOICE_FILES_PER_PROJECT = 5;
 
-export interface InvoiceRemaining {
+interface InvoiceRemaining {
   /** 契約金額（税抜）。projects.amount（工事計画の売上＝契約金額）。 */
   contractSubtotal: number;
   /** 保存済みPDFが残っている分割請求の税抜小計の合計（PDFを削除した分は含めない）。 */
@@ -33,9 +33,9 @@ export function sumSubtotals(
 }
 
 /** 契約金額超過の判定結果。OK のとき null。 */
-export type ContractExceedKind = "NO_CONTRACT" | "OVER" | "SPLIT_OVER";
+type ContractExceedKind = "NO_CONTRACT" | "OVER" | "SPLIT_OVER";
 
-export interface ContractCheckInput {
+interface ContractCheckInput {
   /** 契約金額（税抜）。projects.amount（工事計画の売上＝契約金額）。 */
   contractSubtotal: number;
   /** 保存コピーが残っている他の分割請求の税抜小計の合計（今回分は含めない）。 */
@@ -46,7 +46,7 @@ export interface ContractCheckInput {
   subtotal: number;
 }
 
-export interface ContractCheckResult {
+interface ContractCheckResult {
   kind: ContractExceedKind;
   message: string;
 }

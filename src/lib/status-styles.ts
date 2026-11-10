@@ -156,7 +156,7 @@ export const MANUAL_STATUS_OPTIONS = [
 
 const MANUAL_STATUS_SET: ReadonlySet<string> = new Set(MANUAL_STATUS_OPTIONS);
 
-export function isManualStatus(status: string | null | undefined): boolean {
+function isManualStatus(status: string | null | undefined): boolean {
   return Boolean(status && MANUAL_STATUS_SET.has(status));
 }
 
@@ -223,7 +223,7 @@ export const PAYMENT_STATUS_CLASS: Record<string, string> = {
   支払済み: NEUTRAL,
 };
 
-/** 支払い予定表の行全体の背景。支払済みの行はグレーにする。 */
+/** 支払い予定表の行全体の背景。支払済みの行はグレーにする（未払いは行全体を塗らず、ステータスの黄色だけ）。 */
 export function paymentRowClass(status: string | null | undefined): string {
   return normalizePaymentStatus(status) === "支払済み" ? GREY_ROW_CLASS : "";
 }

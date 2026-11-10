@@ -119,6 +119,7 @@ import {
   projectMatchesKeyword,
 } from "~/lib/project-order";
 import { canReadMaster, isReadOnlyRole } from "~/lib/roles";
+import { isHttpUrl } from "~/lib/safe-url";
 import {
   PROJECT_ROW_HOVER_CLASS,
   PROJECT_STATUS_CLASS,
@@ -189,6 +190,7 @@ const OPTIONAL_COLUMNS = [
   "projectNo",
   "name",
   "notes",
+  "siteAddress",
   "client",
   "period",
   "deliveryMonth",
@@ -206,6 +208,7 @@ function defaultColumnState(): ColumnState {
     projectNo: true,
     name: true,
     notes: false,
+    siteAddress: true,
     client: true,
     period: true,
     deliveryMonth: true,
@@ -252,6 +255,7 @@ interface EditFormState {
   endDate: string;
   name: string;
   notes: string;
+  siteAddress: string;
   startDate: string;
   status: string;
 }
@@ -264,6 +268,7 @@ function toEditForm(p: Project): EditFormState {
     endDate: p.endDate ?? "",
     name: p.name,
     notes: p.notes ?? "",
+    siteAddress: p.siteAddress ?? "",
     startDate: p.startDate ?? "",
     status: p.status || "未対応",
   };
@@ -276,6 +281,7 @@ const EMPTY_FORM: EditFormState = {
   endDate: "",
   name: "",
   notes: "",
+  siteAddress: "",
   startDate: "",
   status: "未対応",
 };
@@ -588,6 +594,7 @@ function ProjectsContent() {
   ]);
 
   const paged = useSortedPagedList({
+    initialShowAll: true,
     options: PROJECT_SORT_OPTIONS,
     resetKey: [
       fiscalPeriod,
@@ -771,7 +778,7 @@ function ProjectsContent() {
     }
     updateMutation.mutate({
       id: p.id,
-      version: p.version,
+      version: p.version ?? 1,
       name: form.name,
       client: form.client,
       clientCompany: form.clientCompany,
@@ -779,6 +786,7 @@ function ProjectsContent() {
       endDate: form.endDate,
       status: form.status,
       notes: form.notes,
+      siteAddress: form.siteAddress,
     });
   };
 
@@ -801,6 +809,7 @@ function ProjectsContent() {
       endDate: createForm.endDate,
       status: createForm.status,
       notes: createForm.notes,
+      siteAddress: createForm.siteAddress,
       deliveryMonth: createForm.deliveryMonth,
     });
   };
@@ -818,7 +827,7 @@ function ProjectsContent() {
         onValueChange={(v) => setFiscalPeriod(Number(v))}
         value={String(fiscalPeriod)}
       >
-        <TabsList>
+        <TabsList className="max-w-full justify-start overflow-x-auto">
           {fiscalPeriodOptions.map((period) => (
             <TabsTrigger key={period} value={String(period)}>
               第{fiscalTermNumber(period)}期
@@ -827,7 +836,7 @@ function ProjectsContent() {
         </TabsList>
       </Tabs>
 
-      <div className="flex flex-nowrap items-end gap-2">
+      <div className="flex flex-wrap items-end gap-2 md:flex-nowrap">
         <div className="flex shrink-0 flex-col gap-1">
           <Label className="text-xs">引渡月</Label>
           <Select
@@ -884,7 +893,7 @@ function ProjectsContent() {
         <Input
           className="h-8 min-w-24 flex-1"
           onChange={(e) => setKeyword(e.target.value)}
-          placeholder="案件ID・工事名・発注元で検索"
+          placeholder="案件ID・工事名・クライアントで検索"
           value={keyword}
         />
         <Popover>
@@ -901,7 +910,8 @@ function ProjectsContent() {
                   ["projectNo", "案件ID"],
                   ["name", "工事名"],
                   ["notes", "備考"],
-                  ["client", "発注元"],
+                  ["siteAddress", "案件住所"],
+                  ["client", "クライアント"],
                   ["period", "工期"],
                   ["deliveryMonth", "引渡月"],
                   ["plannedAmount", "予定売上"],
@@ -938,7 +948,10 @@ function ProjectsContent() {
               {columns.state.notes && (
                 <TableHead className="min-w-40">備考</TableHead>
               )}
-              {columns.state.client && <TableHead>発注元</TableHead>}
+              {columns.state.siteAddress && (
+                <TableHead className="min-w-40">案件住所</TableHead>
+              )}
+              {columns.state.client && <TableHead>クライアント</TableHead>}
               {columns.state.period && <TableHead>工期</TableHead>}
               {columns.state.deliveryMonth && <TableHead>引渡月</TableHead>}
               {columns.state.plannedAmount && <TableHead>予定売上</TableHead>}
@@ -955,6 +968,33 @@ function ProjectsContent() {
               isLoading={isLoading}
               onRetry={() => refetchProjects()}
             />
+            {creating && !isViewer ? (
+              <ProjectCreateRow
+                columns={columns.state}
+                customers={customers}
+                form={createForm}
+                onCancel={() => setCreating(false)}
+                onSave={submitCreate}
+                projectNoPreview={createProjectNoPreview}
+                savePending={createMutation.isPending}
+                setForm={setCreateForm}
+              />
+            ) : (
+              !isViewer && (
+                <TableRow>
+                  <TableCell colSpan={visibleColumnCount}>
+                    <button
+                      className="flex items-center gap-1 py-1 text-muted-foreground text-sm hover:text-foreground"
+                      onClick={openCreate}
+                      type="button"
+                    >
+                      <Plus className="size-4" />
+                      行を追加
+                    </button>
+                  </TableCell>
+                </TableRow>
+              )
+            )}
             {paged.rows.map((p) =>
               editing && editing.id === p.id ? (
                 <ProjectEditRow
@@ -985,14 +1025,14 @@ function ProjectsContent() {
                   onNotesSave={(notes) =>
                     updateStatusMutation.mutate({
                       id: p.id,
-                      version: p.version,
+                      version: p.version ?? 1,
                       notes,
                     })
                   }
                   onStatusChange={(status) =>
                     updateStatusMutation.mutate({
                       id: p.id,
-                      version: p.version,
+                      version: p.version ?? 1,
                       status,
                     })
                   }
@@ -1006,53 +1046,16 @@ function ProjectsContent() {
                 />
               )
             )}
-            {creating && !isViewer ? (
-              <ProjectCreateRow
-                columns={columns.state}
-                customers={customers}
-                form={createForm}
-                onCancel={() => setCreating(false)}
-                onSave={submitCreate}
-                projectNoPreview={createProjectNoPreview}
-                savePending={createMutation.isPending}
-                setForm={setCreateForm}
-              />
-            ) : (
-              !isViewer && (
-                <TableRow>
-                  <TableCell colSpan={visibleColumnCount}>
-                    <div className="flex items-center justify-between gap-3">
-                      <button
-                        className="flex items-center gap-1 py-1 text-muted-foreground text-sm hover:text-foreground"
-                        onClick={openCreate}
-                        type="button"
-                      >
-                        <Plus className="size-4" />
-                        行を追加
-                      </button>
-                      <LoadMore
-                        hasMore={paged.hasMore}
-                        onMore={paged.loadMore}
-                        shown={paged.shown}
-                        total={paged.total}
-                      />
-                    </div>
-                  </TableCell>
-                </TableRow>
-              )
-            )}
           </TableBody>
         </Table>
       </ScrollableTableSection>
-      {(isViewer || creating) && (
-        <LoadMore
-          className="px-1 py-1"
-          hasMore={paged.hasMore}
-          onMore={paged.loadMore}
-          shown={paged.shown}
-          total={paged.total}
-        />
-      )}
+      <LoadMore
+        className="px-1 py-1"
+        hasMore={paged.hasMore}
+        onMore={paged.loadMore}
+        shown={paged.shown}
+        total={paged.total}
+      />
 
       {invoiceProject && (
         <InvoiceModal
@@ -1101,6 +1104,7 @@ function ProjectsContent() {
                   endDate: form.endDate,
                   status: form.status,
                   notes: form.notes,
+                  siteAddress: form.siteAddress,
                 });
                 setPendingDeliveryChange(null);
               }}
@@ -1163,10 +1167,10 @@ function ClientInfoPopover({
               <p className="text-muted-foreground text-xs uppercase tracking-wider">
                 サイト
               </p>
-              {customer.website ? (
+              {isHttpUrl(customer.website) ? (
                 <a
                   className="break-all text-primary hover:underline"
-                  href={customer.website}
+                  href={customer.website ?? undefined}
                   rel="noopener noreferrer"
                   target="_blank"
                 >
@@ -1315,7 +1319,7 @@ function ContractFileCell({ project }: { project: Project }) {
   );
 }
 
-/** ProjectViewRowの案件ID〜発注元までの列（複雑度を抑えるための分割）。 */
+/** ProjectViewRowの案件ID〜クライアントまでの列（複雑度を抑えるための分割）。 */
 function ProjectIdentityCells({
   columns,
   customers,
@@ -1358,6 +1362,14 @@ function ProjectIdentityCells({
           ) : (
             <span className="line-clamp-2">{p.notes || "-"}</span>
           )}
+        </TableCell>
+      )}
+      {columns.siteAddress && (
+        <TableCell
+          className="min-w-40 max-w-56 whitespace-normal text-xs"
+          title={p.siteAddress ?? ""}
+        >
+          <span className="line-clamp-2">{p.siteAddress || "-"}</span>
         </TableCell>
       )}
       {columns.client && (
@@ -1686,10 +1698,26 @@ function ProjectEditRow({
               />
             </div>
           )}
+          {columns.siteAddress && (
+            <div className="flex flex-col gap-1">
+              <Label className="text-[10px] text-muted-foreground">
+                案件住所
+              </Label>
+              <Input
+                className={cn(
+                  "h-8 w-48",
+                  "transition-[width] duration-150 focus:w-64"
+                )}
+                onChange={(e) => set("siteAddress", e.target.value)}
+                placeholder="工事場所の住所"
+                value={form.siteAddress}
+              />
+            </div>
+          )}
           {columns.client && (
             <div className="flex flex-col gap-1">
               <Label className="text-[10px] text-muted-foreground">
-                発注元
+                クライアント
               </Label>
               <Select
                 onValueChange={onCustomerSelected}
@@ -1704,7 +1732,7 @@ function ProjectEditRow({
                   <SelectValue placeholder="選択..." />
                 </SelectTrigger>
                 <SelectContent>
-                  {/* マスタに無い発注元（過去データ）でも、現在の値が空欄にならないよう先頭に出す */}
+                  {/* マスタに無いクライアント（過去データ）でも、現在の値が空欄にならないよう先頭に出す */}
                   {form.client &&
                     !customers?.some((c) => c.company === form.client) && (
                       <SelectItem value={form.client}>{form.client}</SelectItem>
@@ -1870,10 +1898,26 @@ function ProjectCreateRow({
               />
             </div>
           )}
+          {columns.siteAddress && (
+            <div className="flex flex-col gap-1">
+              <Label className="text-[10px] text-muted-foreground">
+                案件住所
+              </Label>
+              <Input
+                className={cn(
+                  "h-8 w-48",
+                  "transition-[width] duration-150 focus:w-64"
+                )}
+                onChange={(e) => set("siteAddress", e.target.value)}
+                placeholder="工事場所の住所"
+                value={form.siteAddress}
+              />
+            </div>
+          )}
           {columns.client && (
             <div className="flex flex-col gap-1">
               <Label className="text-[10px] text-muted-foreground">
-                発注元
+                クライアント
               </Label>
               <Select
                 onValueChange={onCustomerSelected}
@@ -1888,7 +1932,7 @@ function ProjectCreateRow({
                   <SelectValue placeholder="選択..." />
                 </SelectTrigger>
                 <SelectContent>
-                  {/* マスタに無い発注元（過去データ）でも、現在の値が空欄にならないよう先頭に出す */}
+                  {/* マスタに無いクライアント（過去データ）でも、現在の値が空欄にならないよう先頭に出す */}
                   {form.client &&
                     !customers?.some((c) => c.company === form.client) && (
                       <SelectItem value={form.client}>{form.client}</SelectItem>
@@ -2379,7 +2423,7 @@ function InvoiceModal({
   });
   const invoiceTemplate = invoiceMailTemplate({
     clientName: project.clientCompany || project.client,
-    // 顧客マスタのTO担当者（先頭）の名前。未登録なら「ご担当者」
+    // 顧客マスタのTO担当者（先頭）の名前。未登録（空欄）なら宛名と敬称は出さない
     contactName: matchedCustomer?.toContacts?.[0]?.name,
     projectName: project.name,
   });
@@ -2569,12 +2613,12 @@ function InvoiceModal({
       last &&
       last.itemsJson === itemsJson &&
       existingInvoice?.id === last.id &&
-      existingInvoice.invoiceNo
+      existingInvoice.displayNo
     ) {
       return Promise.resolve({
         id: last.id,
         invoiceDate: existingInvoice.invoiceDate,
-        invoiceNo: existingInvoice.invoiceNo,
+        invoiceNo: existingInvoice.displayNo,
         total: existingInvoice.total,
       });
     }
@@ -2588,7 +2632,7 @@ function InvoiceModal({
           return {
             id: created.id,
             invoiceDate: created.invoiceDate,
-            invoiceNo: created.invoiceNo,
+            invoiceNo: created.displayNo,
             total: created.total,
           };
         })
@@ -2614,11 +2658,11 @@ function InvoiceModal({
     () =>
       JSON.stringify({
         items,
-        invoiceNo: existingInvoice?.invoiceNo,
+        invoiceNo: existingInvoice?.displayNo,
         // 入金口座を変えたらプレビューを作り直す（振込先が変わるため）
         account: accountId ?? null,
       }),
-    [items, existingInvoice?.invoiceNo, accountId]
+    [items, existingInvoice?.displayNo, accountId]
   );
   const {
     error: previewError,

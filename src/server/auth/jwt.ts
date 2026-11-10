@@ -20,7 +20,7 @@ export type JwtPayload = {
 /** `verify` = 2FA enabled, code required; `enroll` = 2FA required by role but not set up yet. */
 export type MfaPendingStage = "verify" | "enroll";
 
-export interface MfaPendingPayload {
+interface MfaPendingPayload {
   id: number;
   stage: MfaPendingStage;
   tv: number;

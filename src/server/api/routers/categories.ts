@@ -2,9 +2,9 @@ import { TRPCError } from "@trpc/server";
 import { eq, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
-  adminProcedure,
   createTRPCRouter,
   masterReadableProcedure,
+  masterWriteProcedure,
 } from "~/server/api/trpc";
 import { diffChanges, logAudit } from "~/server/audit/log";
 import { db } from "~/server/db";
@@ -17,7 +17,7 @@ export const categoriesRouter = createTRPCRouter({
     })
   ),
 
-  create: adminProcedure
+  create: masterWriteProcedure
     .input(
       z.object({
         name: z.string().min(1),
@@ -57,7 +57,7 @@ export const categoriesRouter = createTRPCRouter({
       };
     }),
 
-  update: adminProcedure
+  update: masterWriteProcedure
     .input(
       z.object({
         id: z.number(),
@@ -86,7 +86,7 @@ export const categoriesRouter = createTRPCRouter({
     }),
 
   // Physical delete — intentionally different from customers/vendors soft-delete.
-  delete: adminProcedure
+  delete: masterWriteProcedure
     .input(z.object({ id: z.number() }))
     .mutation(async ({ ctx, input }) => {
       const before = await db.query.categories.findFirst({

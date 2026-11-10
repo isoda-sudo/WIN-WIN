@@ -13,7 +13,7 @@ export function isTotpTokenShape(token: string): boolean {
   return TOKEN_PATTERN.test(token.replace(WHITESPACE, ""));
 }
 
-export type TotpCheck =
+type TotpCheck =
   | { ok: true; counter: number }
   | { ok: false; reason: "malformed" | "invalid" | "replayed" };
 

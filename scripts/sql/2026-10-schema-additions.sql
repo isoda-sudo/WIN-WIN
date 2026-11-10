@@ -3,7 +3,7 @@
 --
 -- 目的:
 --   ブランチ fordevelop_0930 が framgia/develop に対して追加した DB スキーマ
---   (src/server/db/schema.ts) を共有DBへ反映する。ADR-0006 / ADR-0007 参照。
+--   (src/server/db/schema.ts) を共有DBへ反映する。ADR-0022 / ADR-0007 参照。
 --   追加のみ（additive-only）・冪等。DROP / 型変更 / 既定値変更は含まない。
 --
 -- 適用方法:
@@ -47,7 +47,7 @@
 
 BEGIN;
 
--- ---- projects (ADR-0006) ----------------------------------------------------
+-- ---- projects (ADR-0022) ----------------------------------------------------
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS locked_at timestamp;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS locked_by integer;
 ALTER TABLE projects ADD COLUMN IF NOT EXISTS planned_amount bigint;
@@ -83,7 +83,7 @@ ALTER TABLE vendors ADD COLUMN IF NOT EXISTS cc_contacts jsonb DEFAULT '[]'::jso
 -- ---- orders ----------------------------------------------------------------
 ALTER TABLE orders ADD COLUMN IF NOT EXISTS payment_no text;
 
--- ---- invoices / invoice_files (ADR-0006) ------------------------------------
+-- ---- invoices / invoice_files (ADR-0022) ------------------------------------
 ALTER TABLE invoices ADD COLUMN IF NOT EXISTS items jsonb;
 
 CREATE TABLE IF NOT EXISTS invoice_files (

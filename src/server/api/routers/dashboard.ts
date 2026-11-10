@@ -538,7 +538,7 @@ async function buildDashboardSummary() {
 // 売上＝案件の工期開始月に計上した契約金額、原価＝その案件の注文確定額、利益＝売上−原価。
 // from/to（YYYY-MM）で対象期間可変。未指定時は当月から過去12ヶ月。
 
-export interface GrowthReportPoint {
+interface GrowthReportPoint {
   profit: number;
   revenue: number;
   ym: string;
@@ -637,8 +637,8 @@ export async function getGrowthReportData(
 
 const REPORT_TYPES = ["customer", "vendor"] as const;
 const AGGREGATE_TYPES = ["period", "project"] as const;
-export type ReportType = (typeof REPORT_TYPES)[number];
-export type AggregateType = (typeof AGGREGATE_TYPES)[number];
+type ReportType = (typeof REPORT_TYPES)[number];
+type AggregateType = (typeof AGGREGATE_TYPES)[number];
 
 interface ReportFilterOption {
   label: string;
@@ -651,7 +651,7 @@ interface ReportGroupTotals {
   revenue: number;
 }
 
-export interface ReportDetailRow {
+interface ReportDetailRow {
   category: string | null;
   cost: number;
   profit: number;
@@ -662,7 +662,7 @@ export interface ReportDetailRow {
   vendor: string | null;
 }
 
-export interface AnalysisReportData {
+interface AnalysisReportData {
   dateEnd: string;
   dateStart: string;
   detail: ReportDetailRow[];
@@ -811,7 +811,7 @@ function buildReportDetailRows(
     .sort((a, b) => b.revenue - a.revenue);
 }
 
-export interface AnalysisReportInput {
+interface AnalysisReportInput {
   aggregateType: AggregateType;
   company?: string;
   dateEnd?: string;
@@ -932,7 +932,7 @@ function buildReportGroups(
   return [...map.values()];
 }
 
-export async function getAnalysisReportData(
+async function getAnalysisReportData(
   input: AnalysisReportInput
 ): Promise<AnalysisReportData> {
   const [allProjects, rawOrders, supersededIds] = await Promise.all([

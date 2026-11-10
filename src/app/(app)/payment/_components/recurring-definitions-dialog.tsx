@@ -169,7 +169,7 @@ function DefinitionRows({
           <TableCell>{d.payee || "-"}</TableCell>
           <TableCell>{d.branch || "-"}</TableCell>
           <TableCell className="text-right tabular-nums">
-            ¥{d.amount.toLocaleString()}
+            {d.amount == null ? "未定" : `¥${d.amount.toLocaleString()}`}
           </TableCell>
           <TableCell>
             {FREQUENCY_LABEL[d.frequency] ?? d.frequency}

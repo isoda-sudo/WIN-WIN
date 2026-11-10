@@ -7,6 +7,7 @@ export type RecurringDefinition =
 
 export interface RecurringFormState {
   amount: string;
+  amountUndecided: boolean; // 未定（金額が決まっていない）。チェック中は金額を入力できず、集計では0円
   branch: string;
   categoryName: string;
   companyAccountId: string;
@@ -29,6 +30,7 @@ export const EMPTY_RECURRING_FORM: RecurringFormState = {
   payee: "",
   branch: "",
   amount: "",
+  amountUndecided: false,
   frequency: "",
   dueDay: "",
   dueDayIsMonthEnd: false,
@@ -49,7 +51,8 @@ export function toRecurringForm(d: RecurringDefinition): RecurringFormState {
     categoryName: d.categoryName ?? "",
     payee: d.payee ?? "",
     branch: d.branch ?? "",
-    amount: String(d.amount),
+    amount: d.amount == null ? "" : String(d.amount),
+    amountUndecided: d.amount == null,
     frequency: d.frequency === "yearly" ? "yearly" : "monthly",
     dueDay: d.dueDay == null ? "" : String(d.dueDay),
     dueDayIsMonthEnd: d.dueDayIsMonthEnd,
@@ -74,8 +77,11 @@ export function validateRecurringForm(f: RecurringFormState): string | null {
     return "名称を入力してください";
   }
   const amount = Number(f.amount);
-  if (f.amount === "" || !Number.isInteger(amount) || amount < 0) {
-    return "金額は0以上の整数で入力してください";
+  if (
+    !f.amountUndecided &&
+    (f.amount === "" || !Number.isInteger(amount) || amount < 0)
+  ) {
+    return "金額は0以上の整数で入力するか、「未定」にチェックしてください";
   }
   if (f.paymentMethod.trim().length > MAX_PAYMENT_METHOD_LENGTH) {
     return `支払方法は${MAX_PAYMENT_METHOD_LENGTH}文字以内で入力してください`;
@@ -107,7 +113,7 @@ export function toRecurringInput(f: RecurringFormState) {
     categoryName: f.categoryName.trim() || null,
     payee: f.payee.trim() || null,
     branch: f.branch.trim() || null,
-    amount: Number(f.amount),
+    amount: f.amountUndecided ? null : Number(f.amount),
     frequency,
     dueDay: f.dueDayIsMonthEnd ? null : Number(f.dueDay),
     dueDayIsMonthEnd: f.dueDayIsMonthEnd,

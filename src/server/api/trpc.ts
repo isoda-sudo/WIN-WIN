@@ -13,6 +13,7 @@ import {
   ACCOUNTING_ROLES,
   FINANCIAL_READ_ROLES,
   MASTER_READ_ROLES,
+  MASTER_WRITE_ROLES,
   READ_ONLY_ROLES,
   REPORTING_ROLES,
 } from "~/lib/roles";
@@ -129,6 +130,22 @@ const timingMiddleware = t.middleware(async ({ ctx, next, path, type }) => {
   }
 });
 
+/**
+ * 排他制御のある画面の「専用」の更新API。画面からしか呼ばれないため、その画面の scope（ヘッダ）が無い・違う呼び出しは、
+ * 排他制御を迂回する呼び出しとして拒否する（ヘッダを省くだけで、編集中の他の人の画面を追い越せないように）。
+ * 受注一覧など、複数の画面から呼ばれる更新（発注・案件の更新）は、ここに含めない（ADR-0017）。
+ */
+const SCREEN_ONLY_MUTATIONS: readonly {
+  prefix: string;
+  scope: string;
+  screen: string;
+}[] = [
+  { prefix: "payments.", scope: "payments", screen: "支払い予定表" },
+  { prefix: "recurringPayments.", scope: "payments", screen: "支払い予定表" },
+  { prefix: "receipts.misc.", scope: "receipts", screen: "売上管理表" },
+  { prefix: "recurringReceipts.", scope: "receipts", screen: "売上管理表" },
+];
+
 /** 排他制御の対象外の更新系処理（編集ではない操作）。 */
 const EDIT_LOCK_EXEMPT_PREFIXES = ["editLocks.", "dashboard."];
 
@@ -151,6 +168,15 @@ async function enforceEditLock(opts: {
     return;
   }
   const scope = ctx.headers.get("x-edit-scope");
+  const screenOnly = SCREEN_ONLY_MUTATIONS.find((s) =>
+    path.startsWith(s.prefix)
+  );
+  if (screenOnly && scope !== screenOnly.scope) {
+    throw new TRPCError({
+      code: "FORBIDDEN",
+      message: `この操作は、${screenOnly.screen}の画面から行ってください`,
+    });
+  }
   if (scope) {
     await assertEditLockNotHeldByOther({
       clientId: ctx.headers.get("x-edit-client"),
@@ -159,15 +185,6 @@ async function enforceEditLock(opts: {
     });
   }
 }
-
-/**
- * Public (unauthenticated) procedure
- *
- * This is the base piece you use to build new queries and mutations on your tRPC API. It does not
- * guarantee that a user querying is authorized, but you can still access user session data if they
- * are logged in.
- */
-export const publicProcedure = t.procedure.use(timingMiddleware);
 
 /**
  * Protected (authenticated) procedure — equivalent to the old app's `authMiddleware`.
@@ -211,6 +228,12 @@ export const adminProcedure = t.procedure
   .use(isAuthed)
   .use(requireRole(["admin"]));
 
+/** 顧客・発注先・工種マスタの新規・編集・削除用（管理者・経理・一般社員）。 */
+export const masterWriteProcedure = t.procedure
+  .use(timingMiddleware)
+  .use(isAuthed)
+  .use(requireRole(MASTER_WRITE_ROLES));
+
 export const accountingOrAdminProcedure = t.procedure
   .use(timingMiddleware)
   .use(isAuthed)
@@ -225,21 +248,6 @@ export const financialReadProcedure = t.procedure
   .use(timingMiddleware)
   .use(isAuthed)
   .use(requireRole(FINANCIAL_READ_ROLES));
-
-export const staffOrAdminProcedure = t.procedure
-  .use(timingMiddleware)
-  .use(isAuthed)
-  .use(requireRole(["admin", "staff"]));
-
-export const staffOrAdminOrViewerProcedure = t.procedure
-  .use(timingMiddleware)
-  .use(isAuthed)
-  .use(requireRole(["admin", "staff", "viewer"]));
-
-export const adminOrViewerProcedure = t.procedure
-  .use(timingMiddleware)
-  .use(isAuthed)
-  .use(requireRole(["admin", "viewer"]));
 
 export const reportingProcedure = t.procedure
   .use(timingMiddleware)

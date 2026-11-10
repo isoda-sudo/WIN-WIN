@@ -40,7 +40,7 @@ describe("visibleHistoryTableNames", () => {
     );
   });
 
-  it("accounting sees finance tables but not admin-only ones", () => {
+  it("accounting sees finance tables and settings masters but not admin-only ones", () => {
     const names = visibleHistoryTableNames("accounting");
     expect(names).toEqual(
       expect.arrayContaining(["misc_payments", "projects"])
@@ -48,22 +48,31 @@ describe("visibleHistoryTableNames", () => {
     expect(names).toContain("recurring_payments");
     expect(names).toContain("misc_receipts");
     expect(names).toContain("recurring_receipts");
-    for (const hidden of [
+    for (const visible of [
       "categories",
+      "banks",
       "payment_categories",
       "receipt_categories",
       "company_accounts",
       "transfer_fee_rules",
-      "users",
-      "invitations",
     ]) {
+      expect(names).toContain(visible);
+    }
+    for (const hidden of ["users", "invitations"]) {
       expect(names).not.toContain(hidden);
     }
   });
 
-  it("staff sees only the common tables", () => {
+  it("staff sees only the common tables (and the masters staff can edit)", () => {
     expect([...visibleHistoryTableNames("staff")].sort()).toEqual(
-      ["customers", "invoices", "orders", "projects", "vendors"].sort()
+      [
+        "categories",
+        "customers",
+        "invoices",
+        "orders",
+        "projects",
+        "vendors",
+      ].sort()
     );
   });
 
@@ -74,10 +83,12 @@ describe("visibleHistoryTableNames", () => {
 });
 
 describe("canViewHistoryTable", () => {
-  it("restricts categories to admin", () => {
+  it("工種マスタの履歴は、編集できる管理者・経理・一般社員が見られる。銀行マスタは一般社員に見せない", () => {
     expect(canViewHistoryTable("admin", "categories")).toBe(true);
-    expect(canViewHistoryTable("accounting", "categories")).toBe(false);
-    expect(canViewHistoryTable("staff", "categories")).toBe(false);
+    expect(canViewHistoryTable("accounting", "categories")).toBe(true);
+    expect(canViewHistoryTable("staff", "categories")).toBe(true);
+    expect(canViewHistoryTable("accounting", "banks")).toBe(true);
+    expect(canViewHistoryTable("staff", "banks")).toBe(false);
   });
 
   it("denies viewer for every table, even common ones", () => {

@@ -65,7 +65,7 @@ const ACCENT = "#7030A0"; // Excelテンプレの紫
 const SEAL_IMAGE_PATH = path.join(process.cwd(), "assets", "company-seal.png");
 const SEAL_SIZE = 64;
 
-/** 社印（角印）の画像（assets/company-seal.png）を、中心 (cx, cy) に描く。 */
+/** 社印（丸印）の画像（assets/company-seal.png）を、中心 (cx, cy) に描く。 */
 export function drawCompanySeal(
   doc: PDFKit.PDFDocument,
   cx: number,
@@ -460,7 +460,7 @@ function drawSummaryBlock(
   return cursorY;
 }
 
-export interface FrozenInvoiceValues {
+interface FrozenInvoiceValues {
   dueDate: Date;
   invoiceDate: Date;
   /** 発行時に保存した明細行。無ければ（旧データ）契約金額1行で再構成する */
@@ -526,11 +526,13 @@ function buildDocumentPDF(
   const due =
     frozen?.dueDate ?? new Date(now.getTime() + DUE_DAYS * MS_PER_DAY);
   const title = isInvoice ? "請　求　書" : "見　積　書";
-  // 請求書はDB(invoices.invoice_no)側の正式な番号をそのまま印字する（未確定の場合のみ
-  // 案件IDベースの仮番号にフォールバック）。見積書はDB上に永続化される番号を持たない
+  // 請求書は保存済みの表示用の番号（通常は案件ID、分割は案件ID①〜⑤）を印字する。
+  // 未保存のプレビューは、案件IDを印字する（案件IDが無い場合のみ仮番号）。見積書はDB上に永続化される番号を持たない
   // ため、従来通り案件IDベースで生成する。
   const no = isInvoice
-    ? (invoiceNo ?? `WW-${String(project.id).padStart(3, "0")}`)
+    ? (invoiceNo ??
+      project.projectNo ??
+      `WW-${String(project.id).padStart(3, "0")}`)
     : `EST-${String(project.id).padStart(3, "0")}`;
 
   /** 指定の用紙サイズで1回描画する。最終のy座標とページ数も返す（1ページに収まる場合の用紙高さ調整に使う）。 */

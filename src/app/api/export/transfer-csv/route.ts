@@ -1,12 +1,18 @@
-import { inArray } from "drizzle-orm";
+import { asc, desc, inArray, isNull } from "drizzle-orm";
 import iconv from "iconv-lite";
 import { type NextRequest, NextResponse } from "next/server";
 import { z } from "zod";
 import { denyUnlessBankAccess } from "~/server/auth/route-guard";
 import { resolveAuthedUser } from "~/server/auth/session";
-import { buildZenginTransferCsv } from "~/server/csv/zengin-transfer";
+import { resolveBankRef } from "~/server/csv/bank-ref";
+import {
+  buildZenginTransferCsv,
+  type OriginatorInfo,
+  toHalfWidthKatakana,
+} from "~/server/csv/zengin-transfer";
 import { db } from "~/server/db";
-import { vendors } from "~/server/db/schema";
+import { companyAccounts, vendors } from "~/server/db/schema";
+import { COMPANY } from "~/server/pdf/company";
 
 export const runtime = "nodejs";
 
@@ -18,8 +24,6 @@ const bodySchema = z.object({
     })
   ),
   transferDate: z.string().nullish(),
-  // true のとき、Excelで開いても先頭の0（口座番号など）が落ちない形で出力する（銀行取込には使わない）
-  excelSafe: z.boolean().optional(),
 });
 
 function filenameDate(d: Date): string {
@@ -74,29 +78,52 @@ export async function POST(req: NextRequest) {
   });
   const vendorByName = new Map(vendorRows.map((v) => [v.company, v]));
 
-  const items = vendorNames.map((name) => ({
-    vendor: name,
-    amount: grouped.get(name) ?? 0,
-    vendorRow: vendorByName.get(name) ?? null,
-  }));
+  const items = await Promise.all(
+    vendorNames.map(async (name) => {
+      const vendorRow = vendorByName.get(name) ?? null;
+      return {
+        vendor: name,
+        amount: grouped.get(name) ?? 0,
+        vendorRow,
+        bankRef: await resolveBankRef(
+          vendorRow?.bankName,
+          vendorRow?.bankBranch
+        ),
+      };
+    })
+  );
+
+  // 振込元（ヘッダーレコード）: 自社口座マスタのデフォルト口座（無ければ並び順の先頭）
+  const [account] = await db
+    .select()
+    .from(companyAccounts)
+    .where(isNull(companyAccounts.deletedAt))
+    .orderBy(
+      desc(companyAccounts.isDefault),
+      asc(companyAccounts.sortOrder),
+      asc(companyAccounts.id)
+    )
+    .limit(1);
+  const originator: Partial<OriginatorInfo> = {
+    code: COMPANY.transferClientCode,
+    name: toHalfWidthKatakana(
+      account?.accountHolder || COMPANY.transferClientName
+    ),
+    accountType: account?.accountType === "当座" ? "2" : "1",
+    accountNumber: account?.accountNumber ?? "",
+    ...(await resolveBankRef(account?.bankName, account?.branchName)),
+  };
 
   const transferDate = parsed.data.transferDate
     ? new Date(parsed.data.transferDate)
     : new Date();
-  const csv = buildZenginTransferCsv(
-    items,
-    transferDate,
-    {},
-    {
-      excelSafe: parsed.data.excelSafe === true,
-    }
-  );
+  const csv = buildZenginTransferCsv(items, transferDate, originator);
   const encoded = iconv.encode(csv, "Shift_JIS");
 
   return new NextResponse(new Uint8Array(encoded), {
     headers: {
       "Content-Type": "text/csv; charset=Shift_JIS",
-      "Content-Disposition": `attachment; filename="sougouhurikomi_${filenameDate(transferDate)}${parsed.data.excelSafe ? "_excel" : ""}.csv"`,
+      "Content-Disposition": `attachment; filename="sougouhurikomi_${filenameDate(transferDate)}.csv"`,
     },
   });
 }

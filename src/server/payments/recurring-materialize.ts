@@ -3,6 +3,7 @@ import {
   dueDateForMonth,
   MISC_STATUS_PAID,
   MISC_STATUS_UNPAID,
+  previousMonthOf,
 } from "~/lib/recurring-payments";
 import {
   miscPayments,
@@ -48,16 +49,17 @@ export async function feeForDefinition(
     : await computeTransferFee(tx, subject);
 }
 
-/** 具体化行の共通フィールド（定義から複写する値）。手数料は算出済みの値を渡す。 */
+/** 具体化行の共通フィールド（定義から複写する値）。手数料は算出済みの値を渡す。amount を渡すとその金額（前月からの引き継ぎ）にする。 */
 function definitionFields(
   def: RecurringDefinition,
   dueDate: string,
-  transferFee: number | null
+  transferFee: number | null,
+  amount: number | null = def.amount
 ) {
   return {
     category: def.categoryName ?? "",
     payee: def.payee ?? "",
-    amount: def.amount,
+    amount,
     paymentDate: dueDate,
     notes: def.notes ?? "",
     transferFee,
@@ -67,8 +69,35 @@ function definitionFields(
 }
 
 /**
+ * 前月の同じ定期支払いの金額（前月の行があれば）。翌月の行の初期値に引き継ぐ。
+ * 前月の行が無い（初回・スキップ月・年次の定期支払い）ときは undefined。
+ */
+async function previousMonthAmount(
+  tx: Tx,
+  recurringId: number,
+  period: string
+): Promise<{ amount: number | null } | undefined> {
+  const prev = previousMonthOf(period);
+  if (!prev) {
+    return;
+  }
+  const [row] = await tx
+    .select({ amount: miscPayments.amount })
+    .from(miscPayments)
+    .where(
+      and(
+        eq(miscPayments.recurringId, recurringId),
+        eq(miscPayments.period, prev)
+      )
+    )
+    .limit(1);
+  return row;
+}
+
+/**
  * 定義の指定月の未払い行を作る（既にあれば何もしない）。作成したら true。
  * 支払IDは支払月（= period）で採番する。対象月でない場合は作らない。
+ * 金額の初期値は、前月の行があればその金額（前月に直した金額・未定を含む）、無ければ定義の金額。
  */
 export async function materializeUnpaidRow(
   tx: Tx,
@@ -81,20 +110,58 @@ export async function materializeUnpaidRow(
     return false;
   }
   const paymentNo = await nextMiscPaymentNoTx(tx, period);
-  const fee = await feeForDefinition(tx, def, feeCtx);
+  const carried = await previousMonthAmount(tx, def.id, period);
+  const amount = carried ? carried.amount : def.amount;
+  const fee = await feeForDefinition(tx, { ...def, amount }, feeCtx);
   const inserted = await tx
     .insert(miscPayments)
     .values({
-      ...definitionFields(def, dueDate, fee),
+      ...definitionFields(def, dueDate, fee, amount),
       type: "支払",
       status: MISC_STATUS_UNPAID,
       recurringId: def.id,
       period,
       paymentNo,
+      // 前月から引き継いだ金額が定義と違う行は、定義を編集しても上書きしない
+      manuallyEdited: carried !== undefined && amount !== def.amount,
     })
     .onConflictDoNothing()
     .returning({ id: miscPayments.id });
   return inserted.length > 0;
+}
+
+/**
+ * 作成済みの未払い行の期日を、定義から計算した期日（土日・祝日・年末年始は翌営業日）に揃える。
+ * 休日の繰越を入れる前に作られた行が、古い月末の日付のまま残らないようにする。
+ * 支払済みの行と、月別に手で直した行は触らない。
+ */
+async function realignUnpaidDueDates(
+  tx: Tx,
+  defs: RecurringDefinition[],
+  existing: {
+    id: number;
+    manuallyEdited: boolean;
+    paymentDate: string | null;
+    recurringId: number | null;
+    status: string | null;
+  }[],
+  yearMonth: string
+): Promise<void> {
+  const defById = new Map(defs.map((d) => [d.id, d]));
+  for (const row of existing) {
+    const def =
+      row.recurringId == null ? undefined : defById.get(row.recurringId);
+    if (!def || row.manuallyEdited || row.status === MISC_STATUS_PAID) {
+      continue;
+    }
+    const due = dueDateForMonth(def, yearMonth);
+    if (due && due !== row.paymentDate) {
+      await tx
+        .update(miscPayments)
+        .set({ paymentDate: due })
+        .where(eq(miscPayments.id, row.id));
+    }
+  }
 }
 
 /** 指定月について、未作成の定期支払い行をすべて作る。作成件数を返す。 */
@@ -114,13 +181,20 @@ export async function ensureMonthTx(
       .from(recurringPaymentSkips)
       .where(eq(recurringPaymentSkips.period, yearMonth)),
     tx
-      .select({ recurringId: miscPayments.recurringId })
+      .select({
+        id: miscPayments.id,
+        manuallyEdited: miscPayments.manuallyEdited,
+        paymentDate: miscPayments.paymentDate,
+        recurringId: miscPayments.recurringId,
+        status: miscPayments.status,
+      })
       .from(miscPayments)
       .where(eq(miscPayments.period, yearMonth)),
   ]);
   const skipped = new Set(skips.map((s) => s.recurringId));
   const have = new Set(existing.map((e) => e.recurringId));
   const feeCtx = await loadFeeContext(tx);
+  await realignUnpaidDueDates(tx, defs, existing, yearMonth);
   let created = 0;
   for (const def of defs) {
     if (skipped.has(def.id) || have.has(def.id)) {
@@ -151,7 +225,13 @@ export async function syncUnpaidRows(
   currentYearMonth: string
 ): Promise<void> {
   const rows = await tx
-    .select({ id: miscPayments.id, period: miscPayments.period })
+    .select({
+      amount: miscPayments.amount,
+      id: miscPayments.id,
+      manuallyEdited: miscPayments.manuallyEdited,
+      paymentDate: miscPayments.paymentDate,
+      period: miscPayments.period,
+    })
     .from(miscPayments)
     .where(
       and(
@@ -166,10 +246,29 @@ export async function syncUnpaidRows(
   for (const row of rows) {
     const dueDate = row.period ? dueDateForMonth(def, row.period) : null;
     if (dueDate) {
-      await tx
-        .update(miscPayments)
-        .set(definitionFields(def, dueDate, fee))
-        .where(eq(miscPayments.id, row.id));
+      const fields = definitionFields(def, dueDate, fee);
+      if (row.manuallyEdited) {
+        // 月別に金額・期日を手で直した行は、その金額・期日を保つ（手数料は直した金額で算出し直す）
+        const keptFee = await feeForDefinition(
+          tx,
+          { ...def, amount: row.amount },
+          feeCtx
+        );
+        await tx
+          .update(miscPayments)
+          .set({
+            ...fields,
+            amount: row.amount,
+            paymentDate: row.paymentDate,
+            transferFee: keptFee,
+          })
+          .where(eq(miscPayments.id, row.id));
+      } else {
+        await tx
+          .update(miscPayments)
+          .set(fields)
+          .where(eq(miscPayments.id, row.id));
+      }
     } else {
       removeIds.push(row.id);
     }

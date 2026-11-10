@@ -77,7 +77,7 @@ async function buildPdf(
 }
 
 /** 3MB 以下になるまで品質→解像度を段階的に下げて PDF 化する。 */
-export async function imagesToPdfFile(
+async function imagesToPdfFile(
   files: File[],
   name: string
 ): Promise<File | null> {

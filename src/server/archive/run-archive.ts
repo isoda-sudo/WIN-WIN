@@ -176,7 +176,7 @@ async function collectProjectFiles(projectId: number): Promise<SourceFile[]> {
   return out;
 }
 
-export interface ArchiveRunResult {
+interface ArchiveRunResult {
   bytesAfter: number;
   bytesBefore: number;
   cutoff: string;

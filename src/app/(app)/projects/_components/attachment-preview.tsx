@@ -51,7 +51,7 @@ function useBlobUrl(dataUrl: string | null | undefined): string | null {
   return src;
 }
 
-export function typeOfMime(mime: string): PreviewAttachment["type"] {
+function typeOfMime(mime: string): PreviewAttachment["type"] {
   if (mime === "application/pdf") {
     return "pdf";
   }

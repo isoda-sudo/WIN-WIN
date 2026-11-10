@@ -23,6 +23,7 @@ import {
   dropPositionOf,
   insertId,
 } from "~/lib/manual-order";
+import { canEditSettingsMaster } from "~/lib/roles";
 import { cn } from "~/lib/utils";
 import { api, type RouterOutputs } from "~/trpc/react";
 import { AccountDialog } from "./account-dialog";
@@ -188,8 +189,8 @@ export default function CompanyAccountsPage() {
   const { data, isLoading, isError, refetch } =
     api.companyAccounts.list.useQuery();
   const { data: me } = api.users.me.useQuery();
-  // 編集は管理者のみ（経理は閲覧専用）。ロール確定前は編集不可として扱う
-  const canEdit = me?.role === "admin";
+  // 編集は管理者・経理。ロール確定前は編集不可として扱う
+  const canEdit = canEditSettingsMaster(me?.role);
   const { move, rows } = useOrderedAccounts(data);
   const [dialog, setDialog] = useState<{ id: number | null } | null>(null);
   const [deleting, setDeleting] = useState<Account | null>(null);

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { applyManualOrder, moveId, parseStoredOrder } from "~/lib/manual-order";
+import { applyManualOrder } from "~/lib/manual-order";
 
 const rows = [{ id: 1 }, { id: 2 }, { id: 3 }, { id: 4 }];
 
@@ -20,23 +20,6 @@ describe("manual-order", () => {
     expect(applyManualOrder(rows, [9, 4, 2]).map((r) => r.id)).toEqual([
       4, 2, 1, 3,
     ]);
-  });
-
-  it("下へ動かすと対象の後ろ、上へ動かすと対象の前に入る", () => {
-    expect(moveId([1, 2, 3, 4], 1, 3)).toEqual([2, 3, 1, 4]);
-    expect(moveId([1, 2, 3, 4], 4, 2)).toEqual([1, 4, 2, 3]);
-  });
-
-  it("同じ行・存在しない行への移動は何も変えない", () => {
-    expect(moveId([1, 2, 3], 2, 2)).toEqual([1, 2, 3]);
-    expect(moveId([1, 2, 3], 9, 2)).toEqual([1, 2, 3]);
-  });
-
-  it("壊れた保存値は空配列にする", () => {
-    expect(parseStoredOrder(null)).toEqual([]);
-    expect(parseStoredOrder("{oops")).toEqual([]);
-    expect(parseStoredOrder('{"a":1}')).toEqual([]);
-    expect(parseStoredOrder('[3,"x",1.5,2]')).toEqual([3, 2]);
   });
 });
 

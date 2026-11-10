@@ -1,5 +1,5 @@
 /** 請求書の消費税計算（発行時の凍結値とPDFプレビューで共通）。 */
-export const INVOICE_TAX_RATE = 0.1;
+const INVOICE_TAX_RATE = 0.1;
 
 export interface InvoiceItemInput {
   name?: string;

@@ -3,7 +3,7 @@
 import { Button } from "~/components/ui/button";
 import { TableCell, TableRow } from "~/components/ui/table";
 
-export const PAYMENT_STATUSES = ["未払い", "支払済み"] as const;
+const PAYMENT_STATUSES = ["未払い", "支払済み"] as const;
 export const STATUS_FILTER_OPTIONS = ["すべて", ...PAYMENT_STATUSES] as const;
 export type StatusFilter = (typeof STATUS_FILTER_OPTIONS)[number];
 

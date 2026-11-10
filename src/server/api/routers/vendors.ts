@@ -8,11 +8,12 @@ import {
   PAYMENT_DUE_MONTH_OFFSETS,
   paymentTermLabel,
 } from "~/lib/payment-term";
+import { canSeeUnmaskedBank } from "~/lib/roles";
+import { websiteSchema } from "~/lib/website-schema";
 import {
-  accountingOrAdminProcedure,
-  adminProcedure,
   createTRPCRouter,
   masterReadableProcedure,
+  masterWriteProcedure,
 } from "~/server/api/trpc";
 import { diffChanges, logAudit } from "~/server/audit/log";
 import { db } from "~/server/db";
@@ -107,6 +108,29 @@ function mergeVendorUpdateFields(
   };
 }
 
+/** 口座項目（銀行名・支店・種別・口座番号・名義）。管理者・経理以外は閲覧も変更もできない。 */
+const BANK_FIELDS = [
+  "bankName",
+  "bankBranch",
+  "bankType",
+  "bankNumber",
+  "bankHolder",
+] as const;
+
+/** 口座項目を扱えないロール（一般社員）の入力から、口座項目を取り除く（既存の値は変わらない）。 */
+function withoutBankFields<
+  T extends Partial<Record<(typeof BANK_FIELDS)[number], unknown>>,
+>(input: T, role: string | null | undefined): T {
+  if (canSeeUnmaskedBank(role)) {
+    return input;
+  }
+  const copy = { ...input };
+  for (const key of BANK_FIELDS) {
+    delete copy[key];
+  }
+  return copy;
+}
+
 const vendorUpsertShape = {
   company: z.string().min(1),
   dept: z.string().nullish(),
@@ -126,7 +150,7 @@ const vendorUpsertShape = {
   paymentDueMonthOffset: z.enum(PAYMENT_DUE_MONTH_OFFSETS).nullish(),
   capital: z.number().nullish(),
   companyScale: z.string().nullish(),
-  website: z.string().nullish(),
+  website: websiteSchema,
   toContacts: contactListSchema.optional(),
   ccContacts: contactListSchema.optional(),
 };
@@ -142,11 +166,11 @@ export const vendorsRouter = createTRPCRouter({
   }),
 
   // 編集画面・支払管理（振込先口座の取得）用：口座番号を含む全項目を返す
-  // （一覧はマスク済みのため、必要時はここから取得する）。口座番号などの非マスク
-  // 情報を閲覧専用(viewer)・一般社員(staff)に開放しないため、admin/accounting限定。
-  getById: accountingOrAdminProcedure
+  // （一覧はマスク済みのため、必要時はここから取得する）。口座項目は
+  // 管理者・経理にだけ返し、一般社員（編集は可能）には空にして返す。
+  getById: masterWriteProcedure
     .input(z.object({ id: z.string() }))
-    .query(async ({ input }) => {
+    .query(async ({ ctx, input }) => {
       const row = await db.query.vendors.findFirst({
         where: and(eq(vendors.id, input.id), isNull(vendors.deletedAt)),
       });
@@ -156,12 +180,23 @@ export const vendorsRouter = createTRPCRouter({
           message: "発注先が見つかりません",
         });
       }
-      return row;
+      if (canSeeUnmaskedBank(ctx.user.role)) {
+        return row;
+      }
+      return {
+        ...row,
+        bankBranch: "",
+        bankHolder: "",
+        bankName: "",
+        bankNumber: "",
+        bankType: "",
+      };
     }),
 
-  create: adminProcedure
+  create: masterWriteProcedure
     .input(z.object(vendorUpsertShape))
-    .mutation(async ({ ctx, input }) => {
+    .mutation(async ({ ctx, input: rawInput }) => {
+      const input = withoutBankFields(rawInput, ctx.user.role);
       const [maxRow] = await db
         .select({ max: sql<number>`coalesce(max(${vendors.id}::int), 0)` })
         .from(vendors);
@@ -219,7 +254,7 @@ export const vendorsRouter = createTRPCRouter({
       return inserted;
     }),
 
-  update: adminProcedure
+  update: masterWriteProcedure
     .input(
       z.object({
         id: z.string(),
@@ -227,7 +262,8 @@ export const vendorsRouter = createTRPCRouter({
         company: z.string().min(1).optional(),
       })
     )
-    .mutation(async ({ ctx, input }) => {
+    .mutation(async ({ ctx, input: rawInput }) => {
+      const input = withoutBankFields(rawInput, ctx.user.role);
       const before = await db.query.vendors.findFirst({
         where: eq(vendors.id, input.id),
       });
@@ -268,7 +304,7 @@ export const vendorsRouter = createTRPCRouter({
       return updated;
     }),
 
-  delete: adminProcedure
+  delete: masterWriteProcedure
     .input(z.object({ id: z.string() }))
     .mutation(async ({ ctx, input }) => {
       const before = await db.query.vendors.findFirst({

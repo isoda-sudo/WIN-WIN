@@ -19,6 +19,10 @@ import {
   MAIL_FROM,
   makeTransporter,
 } from "~/server/email/transporter";
+import {
+  displayNoFor,
+  loadInvoiceDisplayContext,
+} from "~/server/invoices/display-no";
 import { loadProjectBillingTotals } from "~/server/invoices/remaining";
 import { resolveStoredInvoicePdf } from "~/server/pdf/stored-invoice";
 import { advanceToInvoiceIssued } from "~/server/projects/advance-status";
@@ -146,8 +150,12 @@ export async function POST(req: NextRequest) {
   }
 
   // 件名・本文の {請求書番号} を、この請求書の実際の番号に置き換える
-  const subject = fillInvoiceNo(rawSubject, invoice.invoiceNo);
-  const mailBody = fillInvoiceNo(rawBody, invoice.invoiceNo);
+  const displayNo = displayNoFor(
+    invoice,
+    await loadInvoiceDisplayContext(db, project.id)
+  );
+  const subject = fillInvoiceNo(rawSubject, displayNo);
+  const mailBody = fillInvoiceNo(rawBody, displayNo);
   const pdfBuffer = await resolveStoredInvoicePdf(invoice, project);
   const extraAttachments = await loadExtraAttachments({
     attachEstimate,
@@ -190,7 +198,7 @@ export async function POST(req: NextRequest) {
   await logAudit(user.id, "UPDATE", "invoices", invoice.id, {
     name: project.name ?? undefined,
     changes: [
-      `請求書を発送済みに変更（請求書番号: ${invoice.invoiceNo ?? "-"} / 宛先: ${to.join(", ")}${extraAttachments.length > 0 ? ` / 追加添付${extraAttachments.length}件` : ""}）`,
+      `請求書を発送済みに変更（請求書番号: ${displayNo || "-"} / 宛先: ${to.join(", ")}${extraAttachments.length > 0 ? ` / 追加添付${extraAttachments.length}件` : ""}）`,
     ],
   });
   await advanceToInvoiceIssued(project.id, user.id, "メール送信");

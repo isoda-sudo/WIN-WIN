@@ -69,6 +69,16 @@ export const FINANCIAL_READ_ROLES: readonly Role[] = [
 /** 経理領域（売上/支払の書き込み・口座情報）を扱えるロール。 */
 export const ACCOUNTING_ROLES: readonly Role[] = ["admin", "accounting"];
 
+/**
+ * 顧客・発注先・工種マスタの新規・編集・削除ができるロール。
+ * 銀行・支払い種別・収入区分・自社口座などの設定系マスタは、管理者と経理のみ（ACCOUNTING_ROLES）。
+ */
+export const MASTER_WRITE_ROLES: readonly Role[] = [
+  "admin",
+  "accounting",
+  "staff",
+];
+
 function includes(list: readonly Role[], role: string | null | undefined) {
   return (list as readonly string[]).includes(role ?? "");
 }
@@ -79,6 +89,18 @@ export function isReadOnlyRole(role: string | null | undefined): boolean {
 
 export function isTaxAdvisor(role: string | null | undefined): boolean {
   return role === "tax_advisor";
+}
+
+/** 顧客・発注先・工種マスタを新規・編集・削除できるか。 */
+export function canWriteMaster(role: string | null | undefined): boolean {
+  return includes(MASTER_WRITE_ROLES, role);
+}
+
+/** 銀行・支払い種別・収入区分・自社口座など設定系マスタを編集できるか（管理者・経理）。 */
+export function canEditSettingsMaster(
+  role: string | null | undefined
+): boolean {
+  return includes(ACCOUNTING_ROLES, role);
 }
 
 export function canReadMaster(role: string | null | undefined): boolean {
@@ -139,7 +161,8 @@ export const PAGE_ROLES: Record<AppRoute, readonly Role[]> = {
   // マスタ設定
   "/customers": MASTER_READ_ROLES,
   "/vendors": MASTER_READ_ROLES,
-  "/banks": MASTER_READ_ROLES,
+  // 銀行マスタは、管理者・経理だけ（一般社員・閲覧のみには出さない）
+  "/banks": ACCOUNTING_ROLES,
   "/categories": MASTER_READ_ROLES,
   "/payment-categories": ACCOUNTING_ROLES,
   "/receipt-categories": ACCOUNTING_ROLES,

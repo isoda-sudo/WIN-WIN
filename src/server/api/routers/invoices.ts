@@ -29,6 +29,10 @@ import {
 import { logAudit } from "~/server/audit/log";
 import { db } from "~/server/db";
 import { invoiceFiles, invoices, orders, projects } from "~/server/db/schema";
+import {
+  displayNoFor,
+  loadInvoiceDisplayContext,
+} from "~/server/invoices/display-no";
 import { loadProjectBillingTotals } from "~/server/invoices/remaining";
 import { COMPANY } from "~/server/pdf/company";
 import { buildInvoicePDF } from "~/server/pdf/document";
@@ -149,7 +153,11 @@ export const invoicesRouter = createTRPCRouter({
         )
         .orderBy(desc(invoices.id))
         .limit(1);
-      return row;
+      if (!row) {
+        return row;
+      }
+      const ctx = await loadInvoiceDisplayContext(db, input.projectId);
+      return { ...row, displayNo: displayNoFor(row, ctx) };
     }),
 
   // 案件に紐づく保存済み請求書PDFの一覧（最大5件、削除UI用）。
@@ -180,7 +188,14 @@ export const invoicesRouter = createTRPCRouter({
           )
         )
         .orderBy(desc(invoiceFiles.id));
-      return rows;
+      const ctx = await loadInvoiceDisplayContext(db, input.projectId);
+      return rows.map((r) => ({
+        ...r,
+        displayNo: displayNoFor(
+          { id: r.invoiceId, invoiceNo: r.invoiceNo, isSplit: r.isSplit },
+          ctx
+        ),
+      }));
     }),
 
   // 未請求残金。契約金額は invoices.create の既定（明細なし）と同じ基準
@@ -307,13 +322,29 @@ export const invoicesRouter = createTRPCRouter({
           throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
         }
 
+        // 画面・PDF・メールの表示用の番号（通常は案件ID、分割は末尾に①〜⑤）。DBの番号は変えない。
+        // （保存コピーはこのあと作るため、分割なら今回の請求書を一覧の末尾＝最新として加える）
+        const displayCtx = await loadInvoiceDisplayContext(tx, input.projectId);
+        const displayNo = displayNoFor(
+          { id: row.id, invoiceNo, isSplit: input.split },
+          input.split
+            ? {
+                ...displayCtx,
+                splitIdsAsc: [
+                  ...displayCtx.splitIdsAsc.filter((id) => id !== row.id),
+                  row.id,
+                ],
+              }
+            : displayCtx
+        );
+
         // 発行時の値で生成したPDFを保存する。保存済みPDFは台帳の凍結値と同じ内容で、
         // 後からテンプレートや案件名が変わっても発行時の見た目を保つ。
         const pdf = await buildInvoicePDF(
           project,
           projectOrders,
           null,
-          invoiceNo,
+          displayNo,
           {
             dueDate: new Date(dueDate),
             invoiceDate: new Date(invoiceDate),
@@ -335,6 +366,7 @@ export const invoicesRouter = createTRPCRouter({
           created: {
             id: row.id,
             invoiceNo,
+            displayNo,
             subtotal,
             tax,
             total,

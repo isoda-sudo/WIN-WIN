@@ -1,9 +1,5 @@
 import { describe, expect, it } from "vitest";
-import {
-  jstDateString,
-  jstYearMonth,
-  paidAtForStatusChange,
-} from "~/lib/paid-at";
+import { jstDateString, paidAtForStatusChange } from "~/lib/paid-at";
 
 const NOW = new Date("2026-10-08T03:00:00Z");
 const EARLIER = new Date("2026-09-01T00:00:00Z");
@@ -40,16 +36,14 @@ describe("paidAtForStatusChange", () => {
   });
 });
 
-describe("jstDateString / jstYearMonth", () => {
+describe("jstDateString", () => {
   it("uses the JST calendar day, not UTC", () => {
     // 2026-09-30 16:00Z = 2026-10-01 01:00 JST
     const d = new Date("2026-09-30T16:00:00Z");
     expect(jstDateString(d)).toBe("2026-10-01");
-    expect(jstYearMonth(d)).toBe("2026-10");
   });
 
   it("returns null for null or undefined", () => {
     expect(jstDateString(null)).toBeNull();
-    expect(jstYearMonth(undefined)).toBeNull();
   });
 });

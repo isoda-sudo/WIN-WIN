@@ -3,7 +3,6 @@ import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   accountingOrAdminProcedure,
-  adminProcedure,
   createTRPCRouter,
 } from "~/server/api/trpc";
 import { logAudit } from "~/server/audit/log";
@@ -41,7 +40,7 @@ export const paymentCategoriesRouter = createTRPCRouter({
         .orderBy(asc(paymentCategories.order), asc(paymentCategories.id))
   ),
 
-  create: adminProcedure
+  create: accountingOrAdminProcedure
     .input(
       z.object({
         name: nameSchema,
@@ -101,7 +100,7 @@ export const paymentCategoriesRouter = createTRPCRouter({
       return { id: row.id, ...input, order };
     }),
 
-  update: adminProcedure
+  update: accountingOrAdminProcedure
     .input(
       z.object({
         id: z.number().int(),
@@ -172,7 +171,7 @@ export const paymentCategoriesRouter = createTRPCRouter({
 
   // ドラッグ並び替え。渡したIDを先頭から order = 位置 + 1 とし、渡されなかった有効なカテゴリは
   // 現在の並びのまま末尾へ続ける（同時登録された行を取りこぼさない）。1トランザクションで書き換える。
-  reorder: adminProcedure
+  reorder: accountingOrAdminProcedure
     .input(z.object({ ids: z.array(z.number().int()).min(1).max(500) }))
     .mutation(async ({ ctx, input }) => {
       await db.transaction(async (tx) => {
@@ -212,7 +211,7 @@ export const paymentCategoriesRouter = createTRPCRouter({
     }),
 
   // 論理削除。過去の案件外支払・定期支払いは名称を文字列で保持しているため影響しない。
-  delete: adminProcedure
+  delete: accountingOrAdminProcedure
     .input(z.object({ id: z.number().int() }))
     .mutation(async ({ ctx, input }) => {
       const before = await db.query.paymentCategories.findFirst({

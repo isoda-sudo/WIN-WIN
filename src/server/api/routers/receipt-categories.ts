@@ -4,7 +4,6 @@ import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { z } from "zod";
 import {
   accountingOrAdminProcedure,
-  adminProcedure,
   createTRPCRouter,
 } from "~/server/api/trpc";
 import { logAudit } from "~/server/audit/log";
@@ -39,7 +38,7 @@ export const receiptCategoriesRouter = createTRPCRouter({
         .orderBy(asc(receiptCategories.order), asc(receiptCategories.id))
   ),
 
-  create: adminProcedure
+  create: accountingOrAdminProcedure
     .input(
       z.object({
         name: nameSchema,
@@ -95,7 +94,7 @@ export const receiptCategoriesRouter = createTRPCRouter({
       return { id: row.id, ...input };
     }),
 
-  update: adminProcedure
+  update: accountingOrAdminProcedure
     .input(
       z.object({
         id: z.number().int(),
@@ -155,7 +154,7 @@ export const receiptCategoriesRouter = createTRPCRouter({
     }),
 
   // 並べ替えの保存。渡された id の並びどおりに order を 1 から振り直す（有効な区分のみ）。
-  reorder: adminProcedure
+  reorder: accountingOrAdminProcedure
     .input(z.object({ ids: z.array(z.number().int()).min(1).max(500) }))
     .mutation(async ({ ctx, input }) => {
       const ids = [...new Set(input.ids)];
@@ -191,7 +190,7 @@ export const receiptCategoriesRouter = createTRPCRouter({
     }),
 
   // 論理削除。過去の工事外売上・定期売上は名称を文字列で保持しているため影響しない。
-  delete: adminProcedure
+  delete: accountingOrAdminProcedure
     .input(z.object({ id: z.number().int() }))
     .mutation(async ({ ctx, input }) => {
       const before = await findCategory(activeById(input.id));

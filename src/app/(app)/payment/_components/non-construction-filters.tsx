@@ -25,6 +25,8 @@ interface Props {
   filters: NonConstructionFilters;
   onChange: (next: NonConstructionFilters) => void;
   onCreate: () => void;
+  /** 表示中の月の工事外支払いを、税理士用のCSVで出力する。 */
+  onExportCsv: () => void;
   onManageRecurring: () => void;
   onShowFeeChange: (v: boolean) => void;
   /** 閲覧専用（税理士・社労士）: 新規登録・定期支払い登録ボタンを出さない。 */
@@ -39,6 +41,7 @@ export function NonConstructionFilterBar({
   filters,
   onChange,
   onCreate,
+  onExportCsv,
   onManageRecurring,
   onShowFeeChange,
   readOnly,
@@ -51,8 +54,8 @@ export function NonConstructionFilterBar({
   ) => onChange({ ...filters, [key]: value });
 
   return (
-    <div className="flex flex-nowrap items-end justify-between gap-2">
-      <div className="flex min-w-0 flex-1 flex-nowrap items-end gap-2">
+    <div className="flex flex-wrap items-end justify-between gap-2 md:flex-nowrap">
+      <div className="flex w-full min-w-0 flex-1 flex-wrap items-end gap-2 md:w-auto md:flex-nowrap">
         <div className="flex min-w-0 shrink flex-col gap-1">
           <Label className="text-muted-foreground text-xs">
             支払いステータス
@@ -73,7 +76,7 @@ export function NonConstructionFilterBar({
             </SelectContent>
           </Select>
         </div>
-        <div className="flex min-w-0 flex-1 flex-col gap-1">
+        <div className="flex min-w-40 flex-1 flex-col gap-1 md:min-w-0">
           <Label className="text-muted-foreground text-xs">検索</Label>
           <Input
             className="h-8 w-full min-w-0 px-2 text-xs"
@@ -83,7 +86,7 @@ export function NonConstructionFilterBar({
           />
         </div>
       </div>
-      <div className="flex shrink-0 flex-nowrap items-end gap-2">
+      <div className="flex w-full shrink-0 flex-wrap items-end gap-2 md:w-auto md:flex-nowrap">
         <Popover>
           <PopoverTrigger asChild>
             <Button className="h-8 shrink-0" size="sm" variant="outline">
@@ -105,6 +108,14 @@ export function NonConstructionFilterBar({
             </label>
           </PopoverContent>
         </Popover>
+        <Button
+          className="h-8 shrink-0"
+          onClick={onExportCsv}
+          size="sm"
+          variant="outline"
+        >
+          税理士用CSV出力
+        </Button>
         {!readOnly && (
           <>
             <Button

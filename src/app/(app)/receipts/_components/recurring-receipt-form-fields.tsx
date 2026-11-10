@@ -133,8 +133,8 @@ export function RecurringReceiptFormFields({
       ? [...categoryNames, form.categoryName]
       : categoryNames;
   return (
-    <div className="grid grid-cols-2 gap-4">
-      <div className="col-span-2 flex flex-col gap-2">
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
+      <div className="flex flex-col gap-2 sm:col-span-2">
         <Label htmlFor="rrec-name">名称 *</Label>
         <Input
           id="rrec-name"
@@ -170,7 +170,7 @@ export function RecurringReceiptFormFields({
           value={form.amount}
         />
       </div>
-      <div className="col-span-2 flex flex-col gap-2">
+      <div className="flex flex-col gap-2 sm:col-span-2">
         <Label htmlFor="rrec-payer">入金元</Label>
         <Input
           id="rrec-payer"
@@ -179,7 +179,7 @@ export function RecurringReceiptFormFields({
         />
       </div>
       <ScheduleFields form={form} onChange={onChange} />
-      <div className="col-span-2">
+      <div className="sm:col-span-2">
         <CompanyAccountSelect
           accounts={accounts}
           allowNone={false}
@@ -189,7 +189,7 @@ export function RecurringReceiptFormFields({
           value={form.companyAccountId}
         />
       </div>
-      <div className="col-span-2 flex flex-col gap-2">
+      <div className="flex flex-col gap-2 sm:col-span-2">
         <Label htmlFor="rrec-notes">備考</Label>
         <Input
           id="rrec-notes"

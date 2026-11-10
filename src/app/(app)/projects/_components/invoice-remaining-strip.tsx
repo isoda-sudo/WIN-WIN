@@ -3,7 +3,7 @@
 import { TriangleAlert } from "lucide-react";
 import { Button } from "~/components/ui/button";
 
-export interface InvoiceRemainingData {
+interface InvoiceRemainingData {
   contractSubtotal: number;
   issuedSplitSubtotal: number;
   remaining: number;

@@ -5,6 +5,7 @@ import { jstDateParts } from "~/lib/fiscal-period";
 import { canViewHistoryTable } from "~/lib/history-access";
 import { paidAtForStatusChange } from "~/lib/paid-at";
 import { PAY_STATUS_OPTIONS, payStatusToProjectStatus } from "~/lib/pay-status";
+import { pdfDataUrlSchema } from "~/lib/pdf-data-url";
 import { crossesFiscalYear } from "~/lib/period-carryover";
 import {
   isContracted,
@@ -55,6 +56,7 @@ const projectUpsertShape = {
   clientPhone: z.string().nullish(),
   clientEmail: z.string().nullish(),
   clientAddress: z.string().nullish(),
+  siteAddress: z.string().nullish(),
   startDate: z.string().nullish(),
   endDate: z.string().nullish(),
   status: statusInputSchema,
@@ -82,6 +84,81 @@ function isDeliveryMonthOver(deliveryMonth: string | null): boolean {
   const nowIdx = year * MONTHS_PER_YEAR + month - 1;
   const deliveryIdx = Number(m[1]) * MONTHS_PER_YEAR + Number(m[2]) - 1;
   return nowIdx > deliveryIdx;
+}
+
+/**
+ * 案件を削除できるか。確定（フィックス）済み・請求書が発行済み・支払済みの発注がある案件は、
+ * 記録を残すため削除できない（確定の凍結を、削除で回避させない）。
+ */
+async function assertProjectDeletable(
+  project: typeof projects.$inferSelect
+): Promise<void> {
+  if (project.lockedAt) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message:
+        "確定（フィックス）済みの案件は削除できません。先に確定を解除してください",
+    });
+  }
+  const [invoice] = await db
+    .select({ id: invoices.id })
+    .from(invoices)
+    .where(eq(invoices.projectId, project.id))
+    .limit(1);
+  if (invoice) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "請求書を発行した案件は、記録を残すため削除できません",
+    });
+  }
+  const [paid] = await db
+    .select({ id: orders.id })
+    .from(orders)
+    .where(
+      and(
+        eq(orders.projectId, project.id),
+        eq(orders.paymentStatus, "支払済み")
+      )
+    )
+    .limit(1);
+  if (paid) {
+    throw new TRPCError({
+      code: "BAD_REQUEST",
+      message: "支払済みの発注がある案件は、記録を残すため削除できません",
+    });
+  }
+}
+
+/** 更新入力と更新前の案件をマージする（入力が未指定の項目は更新前の値のまま）。 */
+function mergeProjectUpdate(
+  input: {
+    client?: string | null;
+    clientAddress?: string | null;
+    clientCompany?: string | null;
+    clientEmail?: string | null;
+    clientPhone?: string | null;
+    endDate?: string | null;
+    name?: string | null;
+    notes?: string | null;
+    siteAddress?: string | null;
+    startDate?: string | null;
+    status?: string | null;
+  },
+  before: typeof projects.$inferSelect
+) {
+  return {
+    name: input.name ?? before.name,
+    client: input.client ?? before.client,
+    clientCompany: input.clientCompany ?? before.clientCompany,
+    clientPhone: input.clientPhone ?? before.clientPhone,
+    clientEmail: input.clientEmail ?? before.clientEmail,
+    clientAddress: input.clientAddress ?? before.clientAddress,
+    siteAddress: input.siteAddress ?? before.siteAddress,
+    startDate: input.startDate ?? before.startDate,
+    endDate: input.endDate ?? before.endDate,
+    status: input.status || before.status,
+    notes: input.notes ?? before.notes,
+  };
 }
 
 /** 案件＋配下発注の監査ログ絞り込み条件（lastUpdated / recentActivity 共通）。 */
@@ -209,6 +286,7 @@ export const projectsRouter = createTRPCRouter({
             clientPhone: input.clientPhone,
             clientEmail: input.clientEmail,
             clientAddress: input.clientAddress,
+            siteAddress: input.siteAddress,
             // 金額は工事計画（updateRevenue）からのみ反映する（D-14）
             amount: null,
             plannedAmount: null,
@@ -298,13 +376,15 @@ export const projectsRouter = createTRPCRouter({
     .input(
       z.object({
         id: z.number(),
-        version: z.number().nullish(),
+        // 楽観ロック。必須（省略すると他の人の更新を黙って上書きしてしまうため）
+        version: z.number().int(),
         name: z.string().min(1).optional(),
         client: z.string().min(1).optional(),
         clientCompany: z.string().nullish(),
         clientPhone: z.string().nullish(),
         clientEmail: z.string().nullish(),
         clientAddress: z.string().nullish(),
+        siteAddress: z.string().nullish(),
         startDate: z.string().nullish(),
         endDate: z.string().nullish(),
         status: statusInputSchema,
@@ -352,27 +432,15 @@ export const projectsRouter = createTRPCRouter({
         });
       }
 
-      const hasVersion = input.version !== undefined && input.version !== null;
-      const whereClause = hasVersion
-        ? and(
-            eq(projects.id, input.id),
-            eq(projects.version, input.version as number)
-          )
-        : eq(projects.id, input.id);
+      const whereClause = and(
+        eq(projects.id, input.id),
+        eq(projects.version, input.version)
+      );
 
       const result = await db
         .update(projects)
         .set({
-          name: input.name ?? before.name,
-          client: input.client ?? before.client,
-          clientCompany: input.clientCompany ?? before.clientCompany,
-          clientPhone: input.clientPhone ?? before.clientPhone,
-          clientEmail: input.clientEmail ?? before.clientEmail,
-          clientAddress: input.clientAddress ?? before.clientAddress,
-          startDate: input.startDate ?? before.startDate,
-          endDate: input.endDate ?? before.endDate,
-          status: input.status || before.status,
-          notes: input.notes ?? before.notes,
+          ...mergeProjectUpdate(input, before),
           version: sql`${projects.version} + 1`,
         })
         .where(whereClause)
@@ -404,6 +472,7 @@ export const projectsRouter = createTRPCRouter({
         endDate: z.string().nullish(),
         status: statusInputSchema,
         notes: z.string().nullish(),
+        siteAddress: z.string().nullish(),
       })
     )
     .mutation(async ({ ctx, input }) => {
@@ -456,6 +525,7 @@ export const projectsRouter = createTRPCRouter({
               clientPhone: before.clientPhone,
               clientEmail: before.clientEmail,
               clientAddress: before.clientAddress,
+              siteAddress: input.siteAddress ?? before.siteAddress,
               amount: before.amount,
               plannedAmount: before.plannedAmount,
               startDate: input.startDate ?? before.startDate,
@@ -532,6 +602,7 @@ export const projectsRouter = createTRPCRouter({
       if (!before) {
         throw new TRPCError({ code: "NOT_FOUND" });
       }
+      await assertProjectDeletable(before);
       await db
         .update(projects)
         .set({ deletedAt: new Date() })
@@ -779,7 +850,7 @@ export const projectsRouter = createTRPCRouter({
       z.object({
         id: z.number(),
         filename: z.string().nullish(),
-        dataUrl: z.string().startsWith("data:application/pdf"),
+        dataUrl: pdfDataUrlSchema(),
       })
     )
     .mutation(async ({ ctx, input }) => {

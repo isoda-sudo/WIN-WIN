@@ -31,8 +31,3 @@ export function jstDateString(date: Date | null | undefined): string | null {
   const { day, month, year } = jstDateParts(date);
   return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
 }
-
-/** 日時を JST の「YYYY-MM」にする。null は null。 */
-export function jstYearMonth(date: Date | null | undefined): string | null {
-  return jstDateString(date)?.slice(0, 7) ?? null;
-}

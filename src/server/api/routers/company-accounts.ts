@@ -3,14 +3,13 @@ import { and, asc, eq, isNull, sql } from "drizzle-orm";
 import { z } from "zod";
 import {
   accountingOrAdminProcedure,
-  adminProcedure,
   createTRPCRouter,
 } from "~/server/api/trpc";
 import { logAudit } from "~/server/audit/log";
 import { db } from "~/server/db";
 import { companyAccounts } from "~/server/db/schema";
 
-export const MAX_COMPANY_ACCOUNTS = 10;
+const MAX_COMPANY_ACCOUNTS = 10;
 const ACCOUNT_TYPES = ["普通", "当座"] as const;
 const COMPANY_ACCOUNT_LOCK = "company-accounts";
 
@@ -105,7 +104,7 @@ export const companyAccountsRouter = createTRPCRouter({
   }),
 
   // 編集ダイアログ用（口座番号の全桁。管理者のみ）
-  getForEdit: adminProcedure
+  getForEdit: accountingOrAdminProcedure
     .input(z.object({ id: z.number().int() }))
     .query(async ({ input }) => {
       const [row] = await db
@@ -134,120 +133,124 @@ export const companyAccountsRouter = createTRPCRouter({
       };
     }),
 
-  create: adminProcedure.input(createInput).mutation(async ({ ctx, input }) => {
-    const id = await db.transaction(async (tx) => {
-      await lockAccounts(tx);
-      const ids = await activeIds(tx);
-      if (ids.length >= MAX_COMPANY_ACCOUNTS) {
-        throw new TRPCError({
-          code: "BAD_REQUEST",
-          message: "自社口座は10件までです",
-        });
-      }
-      if (await findActiveByName(tx, input.name)) {
-        throw duplicateNameError(input.name);
-      }
-      const [row] = await tx
-        .insert(companyAccounts)
-        .values({
-          name: input.name,
-          bankName: input.bankName,
-          branchName: input.branchName,
-          accountType: input.accountType ?? null,
-          accountNumber: input.accountNumber,
-          accountHolder: input.accountHolder,
-          // 最初の1件は自動でデフォルトにする
-          isDefault: ids.length === 0,
-          sortOrder: ids.length + 1,
-        })
-        .returning({ id: companyAccounts.id });
-      if (!row) {
-        throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
-      }
-      return row.id;
-    });
-    await logAudit(ctx.user.id, "CREATE", "company_accounts", id, {
-      name: input.name,
-      changes: [
-        `新規登録（自社口座: ${input.name}、${input.bankName ?? "-"} ${input.branchName ?? "-"}）`,
-      ],
-    });
-    return { id };
-  }),
+  create: accountingOrAdminProcedure
+    .input(createInput)
+    .mutation(async ({ ctx, input }) => {
+      const id = await db.transaction(async (tx) => {
+        await lockAccounts(tx);
+        const ids = await activeIds(tx);
+        if (ids.length >= MAX_COMPANY_ACCOUNTS) {
+          throw new TRPCError({
+            code: "BAD_REQUEST",
+            message: "自社口座は10件までです",
+          });
+        }
+        if (await findActiveByName(tx, input.name)) {
+          throw duplicateNameError(input.name);
+        }
+        const [row] = await tx
+          .insert(companyAccounts)
+          .values({
+            name: input.name,
+            bankName: input.bankName,
+            branchName: input.branchName,
+            accountType: input.accountType ?? null,
+            accountNumber: input.accountNumber,
+            accountHolder: input.accountHolder,
+            // 最初の1件は自動でデフォルトにする
+            isDefault: ids.length === 0,
+            sortOrder: ids.length + 1,
+          })
+          .returning({ id: companyAccounts.id });
+        if (!row) {
+          throw new TRPCError({ code: "INTERNAL_SERVER_ERROR" });
+        }
+        return row.id;
+      });
+      await logAudit(ctx.user.id, "CREATE", "company_accounts", id, {
+        name: input.name,
+        changes: [
+          `新規登録（自社口座: ${input.name}、${input.bankName ?? "-"} ${input.branchName ?? "-"}）`,
+        ],
+      });
+      return { id };
+    }),
 
-  update: adminProcedure.input(updateInput).mutation(async ({ ctx, input }) => {
-    const before = await db.transaction(async (tx) => {
-      await lockAccounts(tx);
-      const [current] = await tx
-        .select()
-        .from(companyAccounts)
-        .where(
-          and(
-            eq(companyAccounts.id, input.id),
-            isNull(companyAccounts.deletedAt)
-          )
+  update: accountingOrAdminProcedure
+    .input(updateInput)
+    .mutation(async ({ ctx, input }) => {
+      const before = await db.transaction(async (tx) => {
+        await lockAccounts(tx);
+        const [current] = await tx
+          .select()
+          .from(companyAccounts)
+          .where(
+            and(
+              eq(companyAccounts.id, input.id),
+              isNull(companyAccounts.deletedAt)
+            )
+          );
+        if (!current) {
+          throw new TRPCError({
+            code: "NOT_FOUND",
+            message: "自社口座が見つかりません",
+          });
+        }
+        const dup = await findActiveByName(tx, input.name);
+        if (dup && dup.id !== input.id) {
+          throw duplicateNameError(input.name);
+        }
+        await tx
+          .update(companyAccounts)
+          .set({
+            name: input.name,
+            bankName: input.bankName,
+            branchName: input.branchName,
+            accountType: input.accountType ?? null,
+            accountNumber: input.accountNumber,
+            accountHolder: input.accountHolder,
+            updatedAt: new Date(),
+          })
+          .where(eq(companyAccounts.id, input.id));
+        return current;
+      });
+      // 口座番号の値そのものは監査ログへ残さない（変更有無のみ）
+      const changes: string[] = [];
+      if (before.name !== input.name) {
+        changes.push(`表示名を ${before.name} → ${input.name} に変更`);
+      }
+      if ((before.bankName ?? null) !== input.bankName) {
+        changes.push(
+          `銀行名を ${before.bankName ?? "-"} → ${input.bankName ?? "-"} に変更`
         );
-      if (!current) {
-        throw new TRPCError({
-          code: "NOT_FOUND",
-          message: "自社口座が見つかりません",
-        });
       }
-      const dup = await findActiveByName(tx, input.name);
-      if (dup && dup.id !== input.id) {
-        throw duplicateNameError(input.name);
+      if ((before.branchName ?? null) !== input.branchName) {
+        changes.push(
+          `支店名を ${before.branchName ?? "-"} → ${input.branchName ?? "-"} に変更`
+        );
       }
-      await tx
-        .update(companyAccounts)
-        .set({
-          name: input.name,
-          bankName: input.bankName,
-          branchName: input.branchName,
-          accountType: input.accountType ?? null,
-          accountNumber: input.accountNumber,
-          accountHolder: input.accountHolder,
-          updatedAt: new Date(),
-        })
-        .where(eq(companyAccounts.id, input.id));
-      return current;
-    });
-    // 口座番号の値そのものは監査ログへ残さない（変更有無のみ）
-    const changes: string[] = [];
-    if (before.name !== input.name) {
-      changes.push(`表示名を ${before.name} → ${input.name} に変更`);
-    }
-    if ((before.bankName ?? null) !== input.bankName) {
-      changes.push(
-        `銀行名を ${before.bankName ?? "-"} → ${input.bankName ?? "-"} に変更`
-      );
-    }
-    if ((before.branchName ?? null) !== input.branchName) {
-      changes.push(
-        `支店名を ${before.branchName ?? "-"} → ${input.branchName ?? "-"} に変更`
-      );
-    }
-    if ((before.accountType ?? null) !== (input.accountType ?? null)) {
-      changes.push(
-        `預金種別を ${before.accountType ?? "-"} → ${input.accountType ?? "-"} に変更`
-      );
-    }
-    if ((before.accountNumber ?? null) !== input.accountNumber) {
-      changes.push("口座番号を変更");
-    }
-    // 口座名義は値そのものを残さない（変更有無のみ）
-    if ((before.accountHolder ?? null) !== input.accountHolder) {
-      changes.push("口座名義を変更");
-    }
-    await logAudit(ctx.user.id, "UPDATE", "company_accounts", input.id, {
-      name: before.name,
-      changes: changes.length > 0 ? changes : ["更新"],
-    });
-    return { id: input.id };
-  }),
+      if ((before.accountType ?? null) !== (input.accountType ?? null)) {
+        changes.push(
+          `預金種別を ${before.accountType ?? "-"} → ${input.accountType ?? "-"} に変更`
+        );
+      }
+      if ((before.accountNumber ?? null) !== input.accountNumber) {
+        changes.push("口座番号を変更");
+      }
+      // 口座名義は値そのものを残さない（変更有無のみ）
+      if ((before.accountHolder ?? null) !== input.accountHolder) {
+        changes.push("口座名義を変更");
+      }
+      await logAudit(ctx.user.id, "UPDATE", "company_accounts", input.id, {
+        name: before.name,
+        changes: changes.length > 0 ? changes : ["更新"],
+      });
+      return { id: input.id };
+    }),
 
   // 論理削除。過去の支払の振込手数料はスナップショットのため影響しない。
   // デフォルト口座を消した場合は、並び順の先頭の口座を新しいデフォルトにする。
-  delete: adminProcedure
+  delete: accountingOrAdminProcedure
     .input(z.object({ id: z.number().int() }))
     .mutation(async ({ ctx, input }) => {
       const row = await db.transaction(async (tx) => {
@@ -304,7 +307,7 @@ export const companyAccountsRouter = createTRPCRouter({
     }),
 
   // デフォルト口座を設定する（常に1件だけ）。売上管理・請求書の入金口座の初期選択になる。
-  setDefault: adminProcedure
+  setDefault: accountingOrAdminProcedure
     .input(z.object({ id: z.number().int() }))
     .mutation(async ({ ctx, input }) => {
       const name = await db.transaction(async (tx) => {
@@ -342,7 +345,7 @@ export const companyAccountsRouter = createTRPCRouter({
     }),
 
   // ドラッグ並び替え。有効な口座の全IDを新しい順で渡す（sort_order = 位置 + 1）。
-  reorder: adminProcedure
+  reorder: accountingOrAdminProcedure
     .input(
       z.object({ ids: z.array(z.number().int()).max(MAX_COMPANY_ACCOUNTS) })
     )

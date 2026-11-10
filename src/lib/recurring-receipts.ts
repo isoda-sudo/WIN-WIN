@@ -14,10 +14,6 @@ export const RECEIPT_STATUS_RECEIVED = "入金済";
 export const RECEIPT_STATUS_UNRECEIVED = "未入金";
 /** 月次ビューで、まだ工事外売上の行が作られていない定期売上の状態（DBには保存しない）。 */
 export const RECURRING_RECEIPT_STATUS_PLANNED = "予定";
-export const RECEIPT_STATUSES = [
-  RECEIPT_STATUS_UNRECEIVED,
-  RECEIPT_STATUS_RECEIVED,
-] as const;
 
 /** 区分が空・マスタ未登録の行をまとめるブロック名。 */
 export const UNCATEGORIZED_LABEL = "未分類";
@@ -29,7 +25,7 @@ export const UNCATEGORIZED_LABEL = "未分類";
 const RECEIPT_NO_PREFIX = "WS";
 const RECEIPT_NO_SEQ_DIGITS = 3;
 
-export type ReceiptNoKey = MiscNoKey;
+type ReceiptNoKey = MiscNoKey;
 
 /** "YYYY-MM" から売上IDの（期, 月）を求める。不正な形式は null。 */
 export function receiptNoKeyForMonth(yearMonth: string): ReceiptNoKey | null {

@@ -6,7 +6,7 @@
 /** 一覧の初期表示件数と、「次の20件」ボタンで増やす件数。 */
 export const LIST_PAGE_SIZE = 20;
 
-export type SortValue = number | string | null | undefined;
+type SortValue = number | string | null | undefined;
 
 /** 降順比較。null/undefined/空文字は常に末尾（降順でも昇順でも後ろ）に回す。 */
 export function compareDesc(a: SortValue, b: SortValue): number {

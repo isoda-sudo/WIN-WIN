@@ -30,44 +30,6 @@ export function applyManualOrder<T extends { id: number }>(
   });
 }
 
-/**
- * 全行の現在の並び（currentIds）で、fromId を toId の位置へ移動した新しい並びを返す。
- * 下方向へ動かすと toId の後ろ、上方向へ動かすと toId の前に入る（配列の移動と同じ）。
- */
-export function moveId(
-  currentIds: readonly number[],
-  fromId: number,
-  toId: number
-): number[] {
-  const from = currentIds.indexOf(fromId);
-  const to = currentIds.indexOf(toId);
-  if (from < 0 || to < 0 || from === to) {
-    return [...currentIds];
-  }
-  const next = [...currentIds];
-  next.splice(from, 1);
-  next.splice(to, 0, fromId);
-  return next;
-}
-
-/** localStorage から読んだ値を number[] に整える（壊れた値は空配列）。 */
-export function parseStoredOrder(raw: string | null): number[] {
-  if (!raw) {
-    return [];
-  }
-  try {
-    const value: unknown = JSON.parse(raw);
-    if (!Array.isArray(value)) {
-      return [];
-    }
-    return value.filter(
-      (v): v is number => typeof v === "number" && Number.isInteger(v)
-    );
-  } catch {
-    return [];
-  }
-}
-
 /** ドロップ位置: 対象行の「前（上）」か「後（下）」か。 */
 export type DropPosition = "before" | "after";
 
