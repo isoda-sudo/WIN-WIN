@@ -290,7 +290,12 @@ export default function HistoryPage() {
                     {changes.length > 0 ? (
                       <div className="flex flex-col gap-0.5">
                         {changes.map((c, i) => (
-                          <span key={`${log.id}-change-${i.toString()}`}>
+                          // 20文字で折り返し、最大2行まで（全文は、マウスを乗せると出る）
+                          <span
+                            className="line-clamp-2 block w-[20em] max-w-full break-all"
+                            key={`${log.id}-change-${i.toString()}`}
+                            title={localizeChange(c)}
+                          >
                             {localizeChange(c)}
                           </span>
                         ))}
