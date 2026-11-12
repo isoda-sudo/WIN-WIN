@@ -24,8 +24,10 @@ import {
   TableRow,
 } from "~/components/ui/table";
 import { canViewHistoryTable } from "~/lib/history-access";
-import { LIST_PAGE_SIZE } from "~/lib/list-sort";
 import { api, type RouterOutputs } from "~/trpc/react";
+
+/** 履歴は一度に100件ずつ表示する。 */
+const HISTORY_PAGE_SIZE = 100;
 
 type AuditLog = RouterOutputs["auditLogs"]["list"]["rows"][number];
 
@@ -135,11 +137,11 @@ export default function HistoryPage() {
   );
   const total = data?.pages[0]?.total ?? 0;
 
-  // 画面に出す件数は20件ずつ増やす。読み込み済みを超える分はサーバーから次の100件を取得する。
-  const [visible, setVisible] = useState(LIST_PAGE_SIZE);
+  // 画面に出す件数は100件ずつ増やす（サーバーの取得単位と同じ）。
+  const [visible, setVisible] = useState(HISTORY_PAGE_SIZE);
   // biome-ignore lint/correctness/useExhaustiveDependencies: 絞り込み変更時のリセットが目的
   useEffect(() => {
-    setVisible(LIST_PAGE_SIZE);
+    setVisible(HISTORY_PAGE_SIZE);
   }, [tableName, action]);
   useEffect(() => {
     if (visible > filtered.length && hasNextPage && !isFetchingNextPage) {
@@ -307,7 +309,7 @@ export default function HistoryPage() {
       <LoadMore
         className="px-1 py-1"
         hasMore={shown < total}
-        onMore={() => setVisible((v) => v + LIST_PAGE_SIZE)}
+        onMore={() => setVisible((v) => v + HISTORY_PAGE_SIZE)}
         shown={shown}
         total={total}
       />
