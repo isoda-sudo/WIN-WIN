@@ -719,8 +719,8 @@ function orderUpdateChanges(
 
 /**
  * 更新後の振込手数料。レコード生成時に固定した値は、手数料ルールが変わっても再計算しない。
- * 算出し直すのは、(1) まだ算出されていない（空）とき、(2) 支払前に、支払元口座・発注先を
- * 変えたとき（手数料の前提が変わるため）だけ。支払済みの手数料は変えない。
+ * 算出し直すのは、支払前に、支払元の自社口座を切り替えたときだけ。
+ * 空欄（口座・ルールの登録前に作った行）は、保存しても埋めない。支払済みの手数料は変えない。
  */
 async function resolveTransferFee(
   before: OrderRow,
@@ -734,10 +734,8 @@ async function resolveTransferFee(
   }
 ): Promise<number | null> {
   const paid = before.paymentStatus === "支払済み";
-  const premiseChanged =
-    next.companyAccountId !== before.companyAccountId ||
-    next.vendor !== before.vendor;
-  if (before.transferFee !== null && (paid || !premiseChanged)) {
+  const accountChanged = next.companyAccountId !== before.companyAccountId;
+  if (paid || !accountChanged) {
     return before.transferFee;
   }
   return await computeTransferFee(db, {
