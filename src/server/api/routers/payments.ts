@@ -94,18 +94,16 @@ interface FeeInputs {
 type MiscRow = typeof miscPayments.$inferSelect;
 
 /**
- * 更新時の手数料。支払済みの行は口座・金額・相手先が変わらない限り算出済みの値を保つ
- * （ルール変更を遡及させない）。それ以外（未払い等）は常に現行ルールで再算出する。
+ * 更新時の手数料。登録時に固定した値は、ルールが変わっても再計算しない。
+ * 算出し直すのは、未払いの行で、支払元の自社口座を切り替えたときだけ。
+ * 空欄（口座・ルールの登録前に作った行）は、保存しても埋めない。支払済みの手数料は変えない。
  */
 async function resolveFeeOnUpdate(
   before: MiscRow,
   next: FeeInputs
 ): Promise<number | null> {
-  const unchanged =
-    before.companyAccountId === next.companyAccountId &&
-    before.amount === next.amount &&
-    before.payee === next.payee;
-  if (before.status === MISC_STATUS_PAID && unchanged) {
+  const accountChanged = before.companyAccountId !== next.companyAccountId;
+  if (before.status === MISC_STATUS_PAID || !accountChanged) {
     return before.transferFee;
   }
   return await computeTransferFee(db, next);
